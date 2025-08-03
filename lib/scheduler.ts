@@ -13,7 +13,8 @@ export function startEmailScheduler() {
   
   schedulerInterval = setInterval(async () => {
     try {
-      const response = await fetch('/api/process-scheduled-emails', {
+      const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000'
+      const response = await fetch(`${baseUrl}/api/process-scheduled-emails`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

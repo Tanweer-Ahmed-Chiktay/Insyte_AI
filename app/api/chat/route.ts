@@ -357,7 +357,8 @@ export async function POST(request: NextRequest) {
       if (contactName && subject && content) {
         try {
            // Call the send-email-to-contact API
-           const sendEmailResponse = await fetch(`${request.nextUrl.origin}/api/send-email-to-contact`, {
+           const baseUrl = process.env.NEXTAUTH_URL || request.nextUrl.origin
+           const sendEmailResponse = await fetch(`${baseUrl}/api/send-email-to-contact`, {
              method: 'POST',
              headers: {
                'Content-Type': 'application/json',
@@ -517,36 +518,42 @@ When users ask follow-up questions like "yes" or "show me more", refer to previo
     let audioUrl = null
 
     // Generate voice response if requested
-    if (includeVoice && ELEVENLABS_API_KEY) {
+    if (includeVoice) {
       try {
-        // Use a more natural voice (Rachel) with enhanced settings
-        const voiceResponse = await fetch('https://api.elevenlabs.io/v1/text-to-speech/s3TPKV1kjDlVtZbl4Ksh', {
+        // Use the voice synthesize API which handles ElevenLabs and browser TTS fallback
+        const baseUrl = process.env.NEXTAUTH_URL || request.nextUrl.origin
+        const voiceResponse = await fetch(`${baseUrl}/api/voice/synthesize`, {
           method: 'POST',
           headers: {
-            'Accept': 'audio/mpeg',
-            'Content-Type': 'application/json',
-            'xi-api-key': ELEVENLABS_API_KEY
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            text: textResponse,
-            model_id: 'eleven_multilingual_v2', // Better model for more natural speech
-            voice_settings: {
-              stability: 0.75, // Higher stability for clearer speech
-              similarity_boost: 0.8, // Higher similarity for better voice consistency
-              style: 0.2, // Slight style variation for more natural delivery
-              use_speaker_boost: true // Enhanced speaker clarity
-            }
+            text: textResponse
           })
         })
 
         if (voiceResponse.ok) {
-          const audioBuffer = await voiceResponse.arrayBuffer()
-          const base64Audio = Buffer.from(audioBuffer).toString('base64')
-          audioUrl = `data:audio/mpeg;base64,${base64Audio}`
+          const contentType = voiceResponse.headers.get('content-type')
+          
+          // Check if response is JSON (browser TTS fallback)
+          if (contentType?.includes('application/json')) {
+            const data = await voiceResponse.json()
+            
+            if (data.useBrowserTTS) {
+              // Return special flag for client to use browser TTS
+              audioUrl = 'USE_BROWSER_TTS'
+            }
+          } else {
+            // Handle audio blob response (ElevenLabs)
+            const audioBuffer = await voiceResponse.arrayBuffer()
+            const base64Audio = Buffer.from(audioBuffer).toString('base64')
+            audioUrl = `data:audio/mpeg;base64,${base64Audio}`
+          }
         }
       } catch (voiceError) {
         console.error('Voice generation error:', voiceError)
-        // Continue without voice if there's an error
+        // Set flag for client to use browser TTS as fallback
+        audioUrl = 'USE_BROWSER_TTS'
       }
     }
 
@@ -557,6 +564,17 @@ When users ask follow-up questions like "yes" or "show me more", refer to previo
 
   } catch (error) {
     console.error('Chat API error:', error)
+    
+    // Handle specific database connection errors
+    if (error instanceof Error) {
+      if (error.message.includes('prepared statement') || error.message.includes('ConnectorError')) {
+        return NextResponse.json(
+          { error: 'Database connection issue. Please try again in a moment.' },
+          { status: 503 }
+        )
+      }
+    }
+    
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

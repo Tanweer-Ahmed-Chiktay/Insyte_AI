@@ -325,7 +325,12 @@ export function AIAssistant() {
       
       // Play voice response immediately
       if (data.audioUrl) {
-        await playAudio(data.audioUrl)
+        if (data.audioUrl === 'USE_BROWSER_TTS') {
+          // Use browser speech synthesis as fallback
+          await synthesizeAndPlay(data.response)
+        } else {
+          await playAudio(data.audioUrl)
+        }
       } else {
         // Fallback: synthesize speech if no audio provided
         await synthesizeAndPlay(data.response)
@@ -401,7 +406,12 @@ export function AIAssistant() {
       
       // Play voice response if available and enabled
       if (isVoiceEnabled && data.audioUrl) {
-        await playAudio(data.audioUrl)
+        if (data.audioUrl === 'USE_BROWSER_TTS') {
+          // Use browser speech synthesis as fallback
+          await synthesizeAndPlay(data.response)
+        } else {
+          await playAudio(data.audioUrl)
+        }
       }
       
     } catch (error: any) {
@@ -419,7 +429,7 @@ export function AIAssistant() {
     }
   }
 
-  // Fallback speech synthesis
+  // Enhanced speech synthesis with automatic fallback
   const synthesizeAndPlay = async (text: string) => {
     try {
       const response = await fetch('/api/voice/synthesize', {
@@ -429,21 +439,71 @@ export function AIAssistant() {
       })
       
       if (response.ok) {
-        const audioBlob = await response.blob()
-        const audioUrl = URL.createObjectURL(audioBlob)
-        await playAudio(audioUrl)
-        URL.revokeObjectURL(audioUrl)
-      } else {
-        throw new Error('Speech synthesis failed')
+        const contentType = response.headers.get('content-type')
+        
+        // Check if response is JSON (browser TTS fallback)
+        if (contentType?.includes('application/json')) {
+          const data = await response.json()
+          
+          if (data.useBrowserTTS) {
+            console.log('Using browser TTS:', data.message)
+            
+            // Use browser speech synthesis
+            if ('speechSynthesis' in window) {
+              const utterance = new SpeechSynthesisUtterance(data.text)
+              utterance.rate = 0.9
+              utterance.pitch = 1
+              utterance.volume = 0.8
+              
+              // Enhanced voice selection for better quality
+              const voices = speechSynthesis.getVoices()
+              const preferredVoice = voices.find(voice => 
+                voice.name.includes('Google') || 
+                voice.name.includes('Microsoft') ||
+                voice.name.includes('Alex') ||
+                voice.name.includes('Samantha')
+              )
+              if (preferredVoice) {
+                utterance.voice = preferredVoice
+              }
+              
+              speechSynthesis.speak(utterance)
+              return
+            } else {
+              throw new Error('Browser speech synthesis not supported')
+            }
+          }
+        } else {
+          // Handle audio blob response (ElevenLabs)
+          const audioBlob = await response.blob()
+          const audioUrl = URL.createObjectURL(audioBlob)
+          await playAudio(audioUrl)
+          URL.revokeObjectURL(audioUrl)
+          return
+        }
       }
+      
+      throw new Error('Speech synthesis failed')
     } catch (error) {
       console.error('Speech synthesis error:', error)
-      // Fallback to browser speech synthesis
+      
+      // Final fallback to browser speech synthesis
       if ('speechSynthesis' in window) {
+        console.log('Using browser TTS as final fallback')
         const utterance = new SpeechSynthesisUtterance(text)
         utterance.rate = 0.9
         utterance.pitch = 1
+        utterance.volume = 0.8
         speechSynthesis.speak(utterance)
+      } else {
+        // Defer toast to avoid render-time updates
+        setTimeout(() => {
+          toast({
+            title: 'Speech Unavailable',
+            description: 'Text-to-speech is not available in this browser.',
+            variant: 'destructive'
+          })
+        }, 0)
       }
     }
   }

@@ -42,10 +42,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No refresh token found' }, { status: 401 })
     }
 
-    // Get user to find their emails
+    // Get user to find their emails with retry logic
     const user = await safeFindUnique(prisma.user, {
       where: { email: token.email }
-    }, 'user-lookup')
+    }, 'user-lookup') as { id: string; email: string } | null
 
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 401 })
@@ -142,6 +142,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ summary: emailSummary })
   } catch (error) {
     console.error('Error generating summary:', error)
+    
+    // Handle specific database connection errors
+    if (error instanceof Error) {
+      if (error.message.includes('prepared statement') || error.message.includes('ConnectorError')) {
+        return NextResponse.json(
+          { error: 'Database connection issue. Please try again in a moment.' },
+          { status: 503 }
+        )
+      }
+    }
     
     return NextResponse.json(
       { error: 'Failed to generate summary' },
