@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
   
   try {
     // Get query parameters for incremental fetching
-    const { searchParams } = new URL(request.url)
+    const { searchParams } = request.nextUrl
     const since = searchParams.get('since') // ISO date string for incremental fetching
     const maxResults = parseInt(searchParams.get('maxResults') || '50')
     const category = searchParams.get('category') || 'inbox'
