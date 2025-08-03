@@ -6,6 +6,8 @@ import type { User, Contact } from '@prisma/client'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const revalidate = 0
 
 // GET - Fetch all contacts for the authenticated user
 export async function GET(request: NextRequest) {

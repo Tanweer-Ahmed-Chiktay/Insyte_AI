@@ -5,6 +5,8 @@ import { authOptions } from '@/lib/auth'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const revalidate = 0
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY

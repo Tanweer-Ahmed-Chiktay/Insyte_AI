@@ -7,8 +7,8 @@ const globalForPrisma = globalThis as unknown as {
 const getDatabaseUrl = () => {
   const baseUrl = process.env.DATABASE_URL || ''
   const separator = baseUrl.includes('?') ? '&' : '?'
-  // Disable prepared statements and connection pooling to fix serverless issues
-  return `${baseUrl}${separator}prepared_statements=false&connection_limit=1&pool_timeout=0`
+  // Optimize for serverless with pgbouncer and connection limits
+  return `${baseUrl}${separator}pgbouncer=true&prepared_statements=false&connection_limit=1&pool_timeout=20`
 }
 
 export const prisma =

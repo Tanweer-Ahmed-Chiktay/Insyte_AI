@@ -5,6 +5,8 @@ import { prisma } from '@/lib/prisma'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const revalidate = 0
 import { safeFindUnique, safeFindFirst, safeCreate } from '@/lib/prisma-wrapper'
 
 const groq = new Groq({

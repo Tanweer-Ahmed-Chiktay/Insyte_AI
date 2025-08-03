@@ -8,6 +8,8 @@ import { safeFindUnique, safeFindMany, safeCreate } from '@/lib/prisma-wrapper'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const revalidate = 0
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY

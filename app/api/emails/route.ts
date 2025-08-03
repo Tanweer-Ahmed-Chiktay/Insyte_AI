@@ -8,6 +8,7 @@ import { safeUpsert, safeFindFirst, safeCreate, safeFindMany } from '@/lib/prism
 export const runtime = "nodejs"
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
+export const revalidate = 0
 
 // Helper function to categorize emails based on Gmail labels
 function categorizeEmail(labels: string[]): string {

@@ -5,6 +5,8 @@ import { authOptions } from '@/lib/auth'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const revalidate = 0
 
 interface DraftData {
   to: string

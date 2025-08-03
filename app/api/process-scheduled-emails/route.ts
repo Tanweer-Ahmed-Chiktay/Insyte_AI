@@ -5,6 +5,8 @@ import { safeFindMany, safeUpdate, safeCreate, safeQuery } from '@/lib/prisma-wr
 import type { ScheduledEmail, User, Account } from '@prisma/client'
 
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const revalidate = 0
 
 export async function POST(request: NextRequest) {
   try {

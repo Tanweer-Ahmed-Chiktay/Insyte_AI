@@ -7,6 +7,8 @@ import type { Account, User } from '@prisma/client'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const revalidate = 0
 
 export async function GET(request: NextRequest) {
   try {
