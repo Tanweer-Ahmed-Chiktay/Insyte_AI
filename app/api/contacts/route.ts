@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
-import { safeFindUnique, safeFindMany, safeCreate, safeUpdate, safeDelete } from '@/lib/prisma-wrapper'
+import { safeFindUnique, safeFindFirst, safeFindMany, safeCreate, safeUpdate, safeDelete } from '@/lib/prisma-wrapper'
 import type { User, Contact } from '@prisma/client'
 
 // Force dynamic rendering for this route
@@ -157,11 +157,13 @@ export async function PUT(request: NextRequest) {
     }
 
     // Check if email is already used by another contact
-    const emailConflict = await safeFindUnique(prisma.contact, {
+    const emailConflict = await safeFindFirst(prisma.contact, {
       where: {
         userId: user.id,
         email: email,
-        id: { not: id }
+        NOT: {
+          id: id
+        }
       }
     }) as Contact | null
 
