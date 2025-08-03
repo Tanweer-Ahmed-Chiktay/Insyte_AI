@@ -6,6 +6,9 @@ import { prisma } from '@/lib/prisma'
 import { getJson } from 'serpapi'
 import { safeFindUnique, safeFindMany, safeCreate } from '@/lib/prisma-wrapper'
 
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
+
 const GROQ_API_KEY = process.env.GROQ_API_KEY
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
 const SERPAPI_KEY = process.env.SERPAPI_API_KEY

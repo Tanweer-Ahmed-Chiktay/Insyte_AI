@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { safeFindMany, safeUpdate, safeCreate, safeQuery } from '@/lib/prisma-wrapper'
 import type { ScheduledEmail, User, Account } from '@prisma/client'
 
+export const dynamic = 'force-dynamic'
+
 export async function POST(request: NextRequest) {
   try {
     // Get all pending scheduled emails that are due

@@ -5,6 +5,9 @@ import { safeQueryRaw } from '@/lib/prisma-wrapper'
 
 export const runtime = "nodejs"
 
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   const diagnostics = {
     timestamp: new Date().toISOString(),

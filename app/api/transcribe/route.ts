@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
+
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
 import Groq from 'groq-sdk'
 
 const groq = new Groq({

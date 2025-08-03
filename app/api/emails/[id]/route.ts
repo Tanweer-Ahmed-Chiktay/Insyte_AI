@@ -3,6 +3,8 @@ import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 
 export const runtime = "nodejs"
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
 
 interface EmailPart {
   mimeType?: string

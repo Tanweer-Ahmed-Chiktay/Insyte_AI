@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
+
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
 import { safeFindUnique, safeCreate } from '@/lib/prisma-wrapper'
 
 export async function POST(request: NextRequest) {

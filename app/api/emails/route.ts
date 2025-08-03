@@ -6,6 +6,8 @@ import { truncateText } from '@/lib/utils'
 import { safeUpsert, safeFindFirst, safeCreate, safeFindMany } from '@/lib/prisma-wrapper'
 
 export const runtime = "nodejs"
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
 
 // Helper function to categorize emails based on Gmail labels
 function categorizeEmail(labels: string[]): string {

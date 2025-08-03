@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import Groq from 'groq-sdk'
 import { prisma } from '@/lib/prisma'
+
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
 import { safeFindUnique, safeFindFirst, safeCreate } from '@/lib/prisma-wrapper'
 
 const groq = new Groq({

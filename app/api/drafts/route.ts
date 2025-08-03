@@ -3,6 +3,9 @@ import { google } from 'googleapis'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
 
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
+
 interface DraftData {
   to: string
   subject: string

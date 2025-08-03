@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic'
+
 // Simple cron job endpoint to process scheduled emails
 export async function GET(request: NextRequest) {
   try {

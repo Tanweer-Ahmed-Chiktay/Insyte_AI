@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
 
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
+
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
 const VOICE_ID = 's3TPKV1kjDlVtZbl4Ksh' // Updated voice
 
