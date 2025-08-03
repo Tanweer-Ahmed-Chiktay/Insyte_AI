@@ -3,7 +3,7 @@ import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
 import { truncateText } from '@/lib/utils'
-import { safeUpsert, safeFindFirst, safeCreate } from '@/lib/prisma-wrapper'
+import { safeUpsert, safeFindFirst, safeCreate, safeFindMany } from '@/lib/prisma-wrapper'
 
 export const runtime = "nodejs"
 
@@ -258,7 +258,7 @@ export async function GET(request: NextRequest) {
 
     // Get existing summaries for these emails
     const emailIds = validEmails.map(email => email.id)
-    const existingSummaries = await prisma.emailSummary.findMany({
+    const existingSummaries = await safeFindMany(prisma.emailSummary, {
       where: {
         email: {
           gmailId: {
@@ -270,7 +270,7 @@ export async function GET(request: NextRequest) {
       include: {
         email: true
       }
-    })
+    }, 'emailSummary-findMany') as any[]
 
     // Create a map of gmailId to summary for quick lookup
     const summaryMap = new Map<string, any>()
