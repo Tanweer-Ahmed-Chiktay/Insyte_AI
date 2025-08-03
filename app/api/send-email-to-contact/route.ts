@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
+import { safeFindUnique, safeFindFirst, safeCreate } from '@/lib/prisma-wrapper'
+import type { User, Contact } from '@prisma/client'
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,16 +27,16 @@ export async function POST(request: NextRequest) {
     }
 
     // Get user from database
-    const user = await prisma.user.findUnique({
+    const user = await safeFindUnique(prisma.user, {
       where: { email: token.email as string }
-    })
+    }) as User | null
 
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
     // Find contact by name (case-insensitive)
-    const contact = await prisma.contact.findFirst({
+    const contact = await safeFindFirst(prisma.contact, {
       where: {
         userId: user.id,
         name: {
@@ -42,7 +44,7 @@ export async function POST(request: NextRequest) {
           mode: 'insensitive'
         }
       }
-    })
+    }) as Contact | null
 
     if (!contact) {
       return NextResponse.json({ 

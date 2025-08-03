@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { safeFindFirst, safeFindUnique } from '@/lib/prisma-wrapper'
+import type { Account, User } from '@prisma/client'
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,7 +17,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Get user's account from database
-    const account = await prisma.account.findFirst({
+    const account = await safeFindFirst(prisma.account, {
       where: {
         user: {
           email: session.user.email
@@ -29,9 +31,9 @@ export async function GET(request: NextRequest) {
         refresh_token: true,
         expires_at: true
       }
-    })
+    }) as (Pick<Account, 'id' | 'provider' | 'access_token' | 'refresh_token' | 'expires_at'>) | null
 
-    const user = await prisma.user.findUnique({
+    const user = await safeFindUnique(prisma.user, {
       where: {
         email: session.user.email
       },
@@ -40,7 +42,7 @@ export async function GET(request: NextRequest) {
         email: true,
         name: true
       }
-    })
+    }) as (Pick<User, 'id' | 'email' | 'name'>) | null
 
     return NextResponse.json({
       authenticated: true,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
+import { safeFindUnique, safeCreate } from '@/lib/prisma-wrapper'
 
 export async function POST(request: NextRequest) {
   try {
@@ -62,16 +63,16 @@ export async function POST(request: NextRequest) {
       }
 
       // Get user ID from database
-      const user = await prisma.user.findUnique({
+      const user = await safeFindUnique(prisma.user, {
         where: { email: token.email as string }
-      })
+      }, 'user-lookup') as any
 
       if (!user) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 })
       }
 
       // Store scheduled email in database
-      const scheduledEmail = await prisma.scheduledEmail.create({
+      const scheduledEmail = await safeCreate(prisma.scheduledEmail, {
         data: {
           userId: user.id,
           to,
@@ -84,7 +85,7 @@ export async function POST(request: NextRequest) {
           })) : undefined,
           scheduledAt: scheduledDate
         }
-      })
+      }, 'scheduled-email-create') as any
 
       return NextResponse.json({
         success: true,
@@ -178,13 +179,13 @@ export async function POST(request: NextRequest) {
     if (result.data.id) {
       try {
         // Get user ID from database
-        const user = await prisma.user.findUnique({
+        const user = await safeFindUnique(prisma.user, {
           where: { email: token.email as string }
-        })
+        }, 'user-lookup-for-sent-email') as any
 
         if (user) {
           // Store sent email in database with SENT label
-          await prisma.email.create({
+          await safeCreate(prisma.email, {
             data: {
               gmailId: result.data.id,
               userId: user.id,
@@ -205,7 +206,7 @@ export async function POST(request: NextRequest) {
               isDraft: false,
               receivedAt: new Date()
             }
-          })
+          }, 'sent-email-create')
         }
       } catch (dbError) {
         console.error('Error storing sent email in database:', dbError)
