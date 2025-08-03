@@ -17,7 +17,7 @@ interface DraftData {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions)
+    const session = await getServerSession({ req: request, ...authOptions })
     
     if (!session?.accessToken) {
       return NextResponse.json(
@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions)
+    const session = await getServerSession({ req: request, ...authOptions })
     
     if (!session?.accessToken) {
       return NextResponse.json(
@@ -147,8 +147,8 @@ export async function GET(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions)
-    
+    const session = await getServerSession({ req: request, ...authOptions })
+
     if (!session?.accessToken) {
       return NextResponse.json(
         { error: 'Unauthorized' },

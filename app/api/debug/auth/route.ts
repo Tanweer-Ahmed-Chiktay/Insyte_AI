@@ -12,7 +12,7 @@ export const revalidate = 0
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions)
+    const session = await getServerSession({ req: request, ...authOptions })
     
     if (!session?.user?.email) {
       return NextResponse.json({ 

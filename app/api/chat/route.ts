@@ -175,7 +175,7 @@ function categorizeEmail(labels: string[]): string {
 // Helper function to fetch user's emails from database
 async function fetchUserEmails(request: NextRequest, category?: string) {
   try {
-    const session = await getServerSession(authOptions)
+    const session = await getServerSession({ req: request, ...authOptions })
     
     if (!session?.user?.email) {
       return null
@@ -326,7 +326,7 @@ async function storeChatMessage(userId: string, role: 'user' | 'assistant', cont
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions)
+    const session = await getServerSession({ req: request, ...authOptions })
     
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
