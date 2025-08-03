@@ -4,6 +4,7 @@ import { getToken } from 'next-auth/jwt'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { getJson } from 'serpapi'
+import { safeFindUnique, safeFindMany, safeCreate } from '@/lib/prisma-wrapper'
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
@@ -176,9 +177,9 @@ async function fetchUserEmails(request: NextRequest, category?: string) {
     }
 
     // Get user from database
-    const user = await prisma.user.findUnique({
+    const user = await safeFindUnique(prisma.user, {
       where: { email: session.user.email }
-    })
+    }, 'user-lookup') as any
 
     if (!user) {
       return null
@@ -231,7 +232,7 @@ async function fetchUserEmails(request: NextRequest, category?: string) {
      }
 
      // Get recent emails from database
-     const emails = await prisma.email.findMany({
+     const emails = await safeFindMany(prisma.email, {
        where: whereClause,
        orderBy: {
          receivedAt: 'desc'
@@ -240,7 +241,7 @@ async function fetchUserEmails(request: NextRequest, category?: string) {
        include: {
          summary: true
        }
-     })
+     }, 'emails-lookup') as any[]
 
     // Transform database emails to the expected format
       return emails.map((email: any) => ({
@@ -278,7 +279,7 @@ function formatEmailsForContext(emails: EmailForContext[]): string {
 // Helper function to get recent conversation history
 async function getConversationHistory(userId: string, limit: number = 3) {
   try {
-    const recentMessages = await prisma.chatMessage.findMany({
+    const recentMessages = await safeFindMany(prisma.chatMessage, {
       where: { userId },
       orderBy: { createdAt: 'desc' },
       take: limit * 2, // Get more to account for user/assistant pairs
@@ -287,7 +288,7 @@ async function getConversationHistory(userId: string, limit: number = 3) {
         content: true,
         createdAt: true
       }
-    })
+    }, 'chat-history') as any[]
     
     // Reverse to get chronological order and format for Groq API
     return recentMessages
@@ -305,14 +306,14 @@ async function getConversationHistory(userId: string, limit: number = 3) {
 // Helper function to store chat message
 async function storeChatMessage(userId: string, role: 'user' | 'assistant', content: string, emailId?: string) {
   try {
-    await prisma.chatMessage.create({
+    await safeCreate(prisma.chatMessage, {
       data: {
         userId,
         role,
         content,
         emailId
       }
-    })
+    }, 'chat-message-create')
   } catch (error) {
     console.error('Error storing chat message:', error)
   }
@@ -339,7 +340,7 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = session.user?.email ? 
-      (await prisma.user.findUnique({ where: { email: session.user.email } }))?.id : 
+      (await safeFindUnique(prisma.user, { where: { email: session.user.email } }, 'user-lookup') as any)?.id : 
       null
     
     if (!userId) {

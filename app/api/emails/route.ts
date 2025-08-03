@@ -3,6 +3,7 @@ import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
 import { truncateText } from '@/lib/utils'
+import { safeUpsert, safeFindFirst, safeCreate } from '@/lib/prisma-wrapper'
 
 export const runtime = "nodejs"
 
@@ -117,7 +118,7 @@ export async function GET(request: NextRequest) {
     console.log('Gmail query:', query)
     
     // Ensure user exists in database
-    const user = await prisma.user.upsert({
+    const user = await safeUpsert(prisma.user, {
       where: { email: token.email },
       update: {
         name: token.name || null,
@@ -128,7 +129,7 @@ export async function GET(request: NextRequest) {
         name: token.name || null,
         image: token.picture || null
       }
-    })
+    }, 'user-upsert') as any
     
     // Get email list
     const emailList = await gmail.users.messages.list({
@@ -190,7 +191,7 @@ export async function GET(request: NextRequest) {
           const isDraft = labels.includes('DRAFT')
 
           // Cache email in database with proper categorization
-          await prisma.email.upsert({
+          await safeUpsert(prisma.email, {
             where: {
               gmailId: message.id!
             },
@@ -229,7 +230,7 @@ export async function GET(request: NextRequest) {
               isDraft,
               receivedAt: new Date(date)
             }
-          })
+          }, 'email-upsert')
 
           return {
             id: message.id!,
@@ -400,24 +401,24 @@ async function generateEmailSummary(gmailId: string, userId: string) {
     }
 
     // Get email from database using Gmail ID
-    const cachedEmail = await prisma.email.findFirst({
+    const cachedEmail = await safeFindFirst(prisma.email, {
       where: {
         gmailId: gmailId,
         userId: userId
       }
-    })
+    }, 'email-lookup') as any
 
     if (!cachedEmail) {
       throw new Error('Email not found in cache')
     }
 
     // Check if summary already exists using the database email ID
-    const existingSummary = await prisma.emailSummary.findFirst({
+    const existingSummary = await safeFindFirst(prisma.emailSummary, {
       where: {
         emailId: cachedEmail.id,
         userId
       }
-    })
+    }, 'summary-lookup') as any
 
     if (existingSummary) {
       return existingSummary
@@ -476,7 +477,7 @@ async function generateEmailSummary(gmailId: string, userId: string) {
     }
 
     // Save summary to database
-    const emailSummary = await prisma.emailSummary.create({
+    const emailSummary = await safeCreate(prisma.emailSummary, {
       data: {
         emailId: cachedEmail.id,
         userId: userId,
@@ -486,7 +487,7 @@ async function generateEmailSummary(gmailId: string, userId: string) {
         sentiment: 'neutral',
         priority: 'medium'
       }
-    })
+    }, 'summary-create')
 
     console.log(`Generated summary for email ${gmailId}`)
     return emailSummary

@@ -30,6 +30,7 @@ This will show you:
 **Symptoms:**
 - Health endpoint shows `database.status: "failed"`
 - Errors mentioning Prisma or database connection
+- "prepared statement does not exist" errors (PostgreSQL error code 26000)
 
 **Solutions:**
 
@@ -39,16 +40,43 @@ This will show you:
    # Go to Vercel Dashboard > Project > Settings > Environment Variables
    ```
    
-2. **Get correct Supabase connection string:**
+2. **Get correct Supabase connection string with pooling:**
    - Go to Supabase Dashboard > Project > Settings > Database
    - Copy the "Connection string" under "Connection pooling"
-   - Format: `postgresql://postgres:[password]@[host]:6543/postgres?pgbouncer=true`
+   - Use port 6543 with pgbouncer for serverless environments:
+   - Format: `postgresql://postgres:[password]@[host]:6543/postgres?pgbouncer=true&connection_limit=1`
 
 3. **Deploy database schema:**
    ```bash
    # Run locally with production DATABASE_URL
    npx prisma db push
    ```
+
+### Issue 1a: Prepared Statement Errors (Error Code 26000)
+
+**Symptoms:**
+- Error: "prepared statement 's247' does not exist"
+- PrismaClientUnknownRequestError with PostgreSQL code 26000
+- Intermittent database failures in serverless environment
+
+**Root Cause:**
+Serverless functions don't maintain persistent database connections, causing prepared statement cache mismatches.
+
+**Solutions:**
+
+1. **Use Connection Pooling (Recommended):**
+   Update your DATABASE_URL to use Supabase's connection pooler:
+   ```
+   postgresql://postgres:[password]@[host]:6543/postgres?pgbouncer=true&connection_limit=1
+   ```
+
+2. **Regenerate Prisma Client:**
+   ```bash
+   npx prisma generate
+   ```
+
+3. **Redeploy Application:**
+   After updating the DATABASE_URL, redeploy your Vercel application to clear any cached connections.
 
 ### Issue 2: Authentication Errors
 

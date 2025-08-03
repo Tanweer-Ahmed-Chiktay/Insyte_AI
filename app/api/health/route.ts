@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
+import { safeQueryRaw } from '@/lib/prisma-wrapper'
 
 export const runtime = "nodejs"
 
@@ -24,14 +25,24 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Test database connection
+  // Test database connection with retry logic
   try {
     await prisma.$connect()
-    await prisma.$queryRaw`SELECT 1`
+    await safeQueryRaw(`SELECT 1 as test`, 'health-check')
+    
+    // Test a simple table query to verify schema
+    await safeQueryRaw(`SELECT COUNT(*) FROM "User"`, 'schema-check')
+    
     diagnostics.checks.database.status = 'connected'
   } catch (error) {
     diagnostics.checks.database.status = 'failed'
-    diagnostics.checks.database.error = error instanceof Error ? error.message : 'Unknown database error'
+    const errorMessage = error instanceof Error ? error.message : 'Unknown database error'
+    diagnostics.checks.database.error = errorMessage
+    
+    // Add specific guidance for prepared statement errors
+    if (errorMessage.includes('prepared statement') || errorMessage.includes('26000')) {
+      diagnostics.checks.database.error += ' (Prepared statement error - check DATABASE_URL connection pooling)'
+    }
   } finally {
     await prisma.$disconnect()
   }

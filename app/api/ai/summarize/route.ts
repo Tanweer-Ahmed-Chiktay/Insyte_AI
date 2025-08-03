@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import Groq from 'groq-sdk'
 import { prisma } from '@/lib/prisma'
+import { safeFindUnique, safeFindFirst, safeCreate } from '@/lib/prisma-wrapper'
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY
@@ -42,33 +43,33 @@ export async function POST(request: NextRequest) {
     }
 
     // Get user to find their emails
-    const user = await prisma.user.findUnique({
+    const user = await safeFindUnique(prisma.user, {
       where: { email: token.email }
-    })
+    }, 'user-lookup')
 
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 401 })
     }
 
     // Get email content from database (cached)
-    const cachedEmail = await prisma.email.findFirst({
+    const cachedEmail = await safeFindFirst(prisma.email, {
       where: {
         gmailId: emailId,
         userId: user.id
       }
-    })
+    }, 'email-lookup') as any
 
     if (!cachedEmail) {
       return NextResponse.json({ error: 'Email not found in cache. Please refresh your emails first.' }, { status: 404 })
     }
 
     // Check if summary already exists using the database email ID
-    const existingSummary = await prisma.emailSummary.findFirst({
+    const existingSummary = await safeFindFirst(prisma.emailSummary, {
       where: {
         emailId: cachedEmail.id,
         userId: user.id
       }
-    })
+    }, 'summary-lookup') as any
 
     if (existingSummary) {
       return NextResponse.json({ summary: existingSummary })
@@ -126,7 +127,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Save summary to database
-    const emailSummary = await prisma.emailSummary.create({
+    const emailSummary = await safeCreate(prisma.emailSummary, {
       data: {
         emailId: cachedEmail.id,
         userId: user.id,
@@ -136,7 +137,7 @@ export async function POST(request: NextRequest) {
         sentiment: 'neutral', // Could be enhanced with sentiment analysis
         priority: 'medium'
       }
-    })
+    }, 'summary-create')
 
     return NextResponse.json({ summary: emailSummary })
   } catch (error) {
