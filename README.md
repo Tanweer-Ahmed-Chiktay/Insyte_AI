@@ -137,4 +137,6 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## License
 
-MIT License - see LICENSE file for details.
+This project is proprietary and does not have an open source license. All rights reserved.
+
+Third-party dependencies used in this project retain their original licenses (MIT, Apache-2.0, BSD, ISC, etc.) as specified in their respective packages. See package.json and package-lock.json for details on individual dependency licenses.
