@@ -2,21 +2,41 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // Relations
+  accounts       Account[]
+  sessions       Session[]
+  emails         Email[]
+  emailSummaries EmailSummary[]
+  scheduledEmails ScheduledEmail[]
+  preferences    UserPreferences?
+  contacts       Contact[]
+  chatMessages   ChatMessage[]
+  
+  @@map("users")
 }
 
 model Account {
   id                String  @id @default(cuid())
-  userId            String
+  userId            String  @map("user_id")
   type              String
   provider          String
-  providerAccountId String
+  providerAccountId String  @map("provider_account_id")
   refresh_token     String? @db.Text
   access_token      String? @db.Text
   expires_at        Int?
@@ -28,34 +48,17 @@ model Account {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
+  @@map("accounts")
 }
 
 model Session {
   id           String   @id @default(cuid())
-  sessionToken String   @unique
-  userId       String
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
   expires      DateTime
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
 
-model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String    @unique
-  emailVerified DateTime?
-  image         String?
-  accounts      Account[]
-  sessions      Session[]
-  emails        Email[]
-  emailSummaries EmailSummary[]
-  chatMessages  ChatMessage[]
-  emailTemplates EmailTemplate[]
-  scheduledEmails ScheduledEmail[]
-  contacts      Contact[]
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  @@index([email])
+  @@map("sessions")
 }
 
 model VerificationToken {
@@ -64,148 +67,133 @@ model VerificationToken {
   expires    DateTime
 
   @@unique([identifier, token])
+  @@map("verificationtokens")
 }
 
 model Email {
   id          String   @id @default(cuid())
-  userId      String
-  gmailId     String   @unique
-  threadId    String?
+  gmailId     String   @unique @map("gmail_id")
+  userId      String   @map("user_id")
+  threadId    String   @map("thread_id")
   subject     String
   from        String
   to          String[]
-  cc          String[]
-  bcc         String[]
+  cc          String[] @default([])
+  bcc         String[] @default([])
   content     String   @db.Text
-  htmlContent String?  @db.Text
   snippet     String?
-  isRead      Boolean  @default(false)
-  isStarred   Boolean  @default(false)
-  isImportant Boolean  @default(false)
-  isSpam      Boolean  @default(false)
-  isTrash     Boolean  @default(false)
-  isDraft     Boolean  @default(false)
-  labels      String[]
-  attachments Json?
-  receivedAt  DateTime
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  summary      EmailSummary?
-  chatMessages ChatMessage[]
-
+  labels      String[] @default([])
+  isRead      Boolean  @default(false) @map("is_read")
+  isStarred   Boolean  @default(false) @map("is_starred")
+  isImportant Boolean  @default(false) @map("is_important")
+  isSpam      Boolean  @default(false) @map("is_spam")
+  isTrash     Boolean  @default(false) @map("is_trash")
+  isDraft     Boolean  @default(false) @map("is_draft")
+  receivedAt  DateTime @map("received_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  summaries EmailSummary[]
+  
+  @@index([userId, gmailId])
   @@index([userId, receivedAt])
   @@index([userId, isRead])
-  @@index([userId, isStarred])
-  @@index([gmailId])
+  @@map("emails")
 }
 
 model EmailSummary {
   id          String   @id @default(cuid())
-  emailId     String   @unique
-  userId      String
+  emailId     String   @map("email_id")
+  userId      String   @map("user_id")
   summary     String   @db.Text
-  sentiment   String?
-  priority    String?
+  keyPoints   String[] @default([]) @map("key_points")
+  actionItems String[] @default([]) @map("action_items")
+  sentiment   String   @default("neutral")
+  priority    String   @default("medium")
   category    String?
-  keyPoints   String[]
-  actionItems String[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+  
+  @@unique([emailId, userId])
   @@index([userId])
-  @@index([priority])
-  @@index([category])
-}
-
-model ChatMessage {
-  id        String   @id @default(cuid())
-  userId    String
-  emailId   String?
-  content   String   @db.Text
-  role      String   // 'user' or 'assistant'
-  createdAt DateTime @default(now())
-
-  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  email Email? @relation(fields: [emailId], references: [id], onDelete: Cascade)
-
-  @@index([userId, createdAt])
-  @@index([emailId])
-}
-
-model EmailTemplate {
-  id          String   @id @default(cuid())
-  userId      String
-  name        String
-  subject     String
-  content     String   @db.Text
-  category    String?
-  isPublic    Boolean  @default(false)
-  usageCount  Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([category])
-  @@index([isPublic])
+  @@map("email_summaries")
 }
 
 model UserPreferences {
-  id                    String  @id @default(cuid())
-  userId                String  @unique
-  theme                 String  @default("light")
-  emailsPerPage         Int     @default(50)
-  autoSummarize         Boolean @default(true)
-  notificationsEnabled  Boolean @default(true)
-  voiceAssistantEnabled Boolean @default(false)
-  language              String  @default("en")
-  timezone              String  @default("UTC")
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-
-  @@index([userId])
+  id              String  @id @default(cuid())
+  userId          String  @unique @map("user_id")
+  autoSummarize   Boolean @default(true) @map("auto_summarize")
+  theme           String  @default("light")
+  emailsPerPage   Int     @default(50) @map("emails_per_page")
+  notifications   Boolean @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("user_preferences")
 }
 
 model ScheduledEmail {
-  id          String   @id @default(cuid())
-  userId      String
-  to          String
-  subject     String
-  htmlBody    String   @db.Text
-  attachments Json?
-  scheduledAt DateTime
-  status      String   @default("pending") // pending, sent, failed, cancelled
-  attempts    Int      @default(0)
-  lastError   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  to           String
+  cc           String[] @default([])
+  bcc          String[] @default([])
+  subject      String
+  htmlBody     String   @map("html_body") @db.Text
+  attachments  Json?    // JSON array of attachment objects
+  scheduledAt  DateTime @map("scheduled_at")
+  status       String   @default("pending") // pending, processing, sent, failed
+  attempts     Int      @default(0)
+  lastError    String?  @map("last_error")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  
+  // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([scheduledAt])
-  @@index([status])
+  
+  @@index([userId, status])
+  @@index([scheduledAt, status])
+  @@map("scheduled_emails")
 }
 
 model Contact {
   id        String   @id @default(cuid())
-  userId    String
+  userId    String   @map("user_id")
   name      String
   email     String
   phone     String?
   notes     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+  
   @@unique([userId, email])
   @@index([userId])
-  @@index([name])
+  @@map("contacts")
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  role      String   // 'user' or 'assistant'
+  content   String   @db.Text
+  emailId   String?  @map("email_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, createdAt])
+  @@map("chat_messages")
 }
