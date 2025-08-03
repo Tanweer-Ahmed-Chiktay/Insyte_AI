@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { safeFindFirst, safeFindUnique } from '@/lib/prisma-wrapper'
+// Removed prisma-wrapper - using prisma directly
 import type { Account, User } from '@prisma/client'
 
 // Force dynamic rendering for this route
@@ -22,27 +22,27 @@ export async function GET(request: NextRequest) {
     }
 
     // Get user's account from database
-    const account = await safeFindFirst(prisma.account, {
-      where: {
-        user: {
-          email: session.user.email
-        },
-        provider: 'google'
-      },
-      select: {
-        id: true,
-        provider: true,
-        access_token: true,
-        refresh_token: true,
-        expires_at: true
-      }
-    }) as (Pick<Account, 'id' | 'provider' | 'access_token' | 'refresh_token' | 'expires_at'>) | null
-
-    const user = await safeFindUnique(prisma.user, {
-      where: {
+  const account = await prisma.account.findFirst({
+    where: {
+      user: {
         email: session.user.email
       },
-      select: {
+      provider: 'google'
+    },
+    select: {
+      id: true,
+      provider: true,
+      access_token: true,
+      refresh_token: true,
+      expires_at: true
+    }
+  }) as (Pick<Account, 'id' | 'provider' | 'access_token' | 'refresh_token' | 'expires_at'>) | null
+
+    const user = await prisma.user.findUnique({
+    where: {
+      email: session.user.email
+    },
+    select: {
         id: true,
         email: true,
         name: true

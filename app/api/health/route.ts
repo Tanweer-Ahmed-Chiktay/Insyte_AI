@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { prisma } from '@/lib/prisma'
-import { safeQueryRaw } from '@/lib/prisma-wrapper'
+// Removed prisma-wrapper - using prisma directly
 
 export const runtime = "nodejs"
 
@@ -32,10 +32,10 @@ export async function GET(request: NextRequest) {
   // Test database connection with retry logic
   try {
     await prisma.$connect()
-    await safeQueryRaw(`SELECT 1 as test`, 'health-check')
+    await prisma.$queryRaw`SELECT 1 as test`
     
     // Test a simple table query to verify schema
-    await safeQueryRaw(`SELECT COUNT(*) FROM "User"`, 'schema-check')
+    await prisma.$queryRaw`SELECT COUNT(*) FROM "User"`
     
     diagnostics.checks.database.status = 'connected'
   } catch (error) {

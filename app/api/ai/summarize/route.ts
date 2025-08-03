@@ -7,7 +7,7 @@ import { prisma } from '@/lib/prisma'
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 export const revalidate = 0
-import { safeFindUnique, safeFindFirst, safeCreate } from '@/lib/prisma-wrapper'
+// Removed prisma-wrapper - using prisma directly
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY
@@ -48,33 +48,33 @@ export async function POST(request: NextRequest) {
     }
 
     // Get user to find their emails with retry logic
-    const user = await safeFindUnique(prisma.user, {
-      where: { email: token.email }
-    }, 'user-lookup') as { id: string; email: string } | null
+  const user = await prisma.user.findUnique({
+    where: { email: token.email }
+  }) as { id: string; email: string } | null
 
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 401 })
     }
 
     // Get email content from database (cached)
-    const cachedEmail = await safeFindFirst(prisma.email, {
-      where: {
-        gmailId: emailId,
-        userId: user.id
-      }
-    }, 'email-lookup') as any
+  const cachedEmail = await prisma.email.findFirst({
+    where: {
+      gmailId: emailId,
+      userId: user.id
+    }
+  }) as any
 
     if (!cachedEmail) {
       return NextResponse.json({ error: 'Email not found in cache. Please refresh your emails first.' }, { status: 404 })
     }
 
     // Check if summary already exists using the database email ID
-    const existingSummary = await safeFindFirst(prisma.emailSummary, {
-      where: {
-        emailId: cachedEmail.id,
-        userId: user.id
-      }
-    }, 'summary-lookup') as any
+  const existingSummary = await prisma.emailSummary.findFirst({
+    where: {
+      emailId: cachedEmail.id,
+      userId: user.id
+    }
+  }) as any
 
     if (existingSummary) {
       return NextResponse.json({ summary: existingSummary })
@@ -132,17 +132,17 @@ export async function POST(request: NextRequest) {
     }
 
     // Save summary to database
-    const emailSummary = await safeCreate(prisma.emailSummary, {
-      data: {
-        emailId: cachedEmail.id,
-        userId: user.id,
-        summary,
-        keyPoints,
-        actionItems,
-        sentiment: 'neutral', // Could be enhanced with sentiment analysis
-        priority: 'medium'
-      }
-    }, 'summary-create')
+  const emailSummary = await prisma.emailSummary.create({
+    data: {
+      emailId: cachedEmail.id,
+      userId: user.id,
+      summary,
+      keyPoints,
+      actionItems,
+      sentiment: 'neutral', // Could be enhanced with sentiment analysis
+      priority: 'medium'
+    }
+  })
 
     return NextResponse.json({ summary: emailSummary })
   } catch (error) {

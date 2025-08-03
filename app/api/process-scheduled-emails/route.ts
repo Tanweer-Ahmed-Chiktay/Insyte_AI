@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
-import { safeFindMany, safeUpdate, safeCreate, safeQuery } from '@/lib/prisma-wrapper'
+// Removed prisma-wrapper - using prisma directly
 import type { ScheduledEmail, User, Account } from '@prisma/client'
 
 export const dynamic = 'force-dynamic'
@@ -11,7 +11,7 @@ export const revalidate = 0
 export async function POST(request: NextRequest) {
   try {
     // Get all pending scheduled emails that are due
-    const dueEmails = await safeFindMany(prisma.scheduledEmail, {
+    const dueEmails = await prisma.scheduledEmail.findMany({
       where: {
         status: 'pending',
         scheduledAt: {
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
         }
       },
       take: 10 // Process max 10 emails at a time
-    }, 'scheduled-emails-lookup') as (ScheduledEmail & {
+    }) as (ScheduledEmail & {
       user: User & {
         accounts: Account[]
       }
@@ -41,13 +41,13 @@ export async function POST(request: NextRequest) {
     for (const scheduledEmail of dueEmails) {
       try {
         // Update status to processing
-        await safeUpdate(prisma.scheduledEmail, {
+        await prisma.scheduledEmail.update({
           where: { id: scheduledEmail.id },
           data: { 
             status: 'processing',
             attempts: scheduledEmail.attempts + 1
           }
-        }, 'scheduled-email-processing-update')
+        })
 
         const googleAccount = scheduledEmail.user.accounts.find(acc => acc.provider === 'google')
         
@@ -126,18 +126,18 @@ export async function POST(request: NextRequest) {
         })
 
         // Update status to sent
-        await safeUpdate(prisma.scheduledEmail, {
+        await prisma.scheduledEmail.update({
           where: { id: scheduledEmail.id },
           data: { 
             status: 'sent',
             lastError: null
           }
-        }, 'scheduled-email-sent-update')
+        })
 
         // Store sent email in database with proper labels
         if (result.data.id) {
           try {
-            await safeCreate(prisma.email, {
+            await prisma.email.create({
               data: {
                 gmailId: result.data.id,
                 userId: scheduledEmail.userId,
@@ -158,7 +158,7 @@ export async function POST(request: NextRequest) {
                 isDraft: false,
                 receivedAt: new Date()
               }
-            }, 'scheduled-sent-email-create')
+            })
           } catch (dbError) {
             console.error('Error storing scheduled sent email in database:', dbError)
             // Don't fail the request if database storage fails
@@ -178,13 +178,13 @@ export async function POST(request: NextRequest) {
         const maxAttempts = 3
         const newStatus = scheduledEmail.attempts >= maxAttempts ? 'failed' : 'pending'
         
-        await safeUpdate(prisma.scheduledEmail, {
+        await prisma.scheduledEmail.update({
           where: { id: scheduledEmail.id },
           data: { 
             status: newStatus,
             lastError: error instanceof Error ? error.message : 'Unknown error'
           }
-        }, 'scheduled-email-error-update')
+        })
 
         results.push({
           id: scheduledEmail.id,
@@ -212,17 +212,14 @@ export async function POST(request: NextRequest) {
 // GET endpoint to check scheduled emails status
 export async function GET() {
   try {
-    const stats = await safeQuery(
-      () => prisma.scheduledEmail.groupBy({
-        by: ['status'],
-        _count: {
-          id: true
-        }
-      }),
-      'scheduled-emails-stats'
-    )
+    const stats = await prisma.scheduledEmail.groupBy({
+      by: ['status'],
+      _count: {
+        id: true
+      }
+    })
 
-    const upcomingEmails = await safeFindMany(prisma.scheduledEmail, {
+    const upcomingEmails = await prisma.scheduledEmail.findMany({
       where: {
         status: 'pending',
         scheduledAt: {
@@ -239,7 +236,7 @@ export async function GET() {
         subject: true,
         scheduledAt: true
       }
-    }, 'upcoming-emails-lookup')
+    })
 
     return NextResponse.json({
       stats,

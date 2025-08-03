@@ -4,7 +4,7 @@ import { getToken } from 'next-auth/jwt'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { getJson } from 'serpapi'
-import { safeFindUnique, safeFindMany, safeCreate } from '@/lib/prisma-wrapper'
+// Removed prisma-wrapper - using prisma directly
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
@@ -182,9 +182,9 @@ async function fetchUserEmails(request: NextRequest, category?: string) {
     }
 
     // Get user from database
-    const user = await safeFindUnique(prisma.user, {
-      where: { email: session.user.email }
-    }, 'user-lookup') as any
+  const user = await prisma.user.findUnique({
+    where: { email: session.user.email }
+  }) as any
 
     if (!user) {
       return null
@@ -237,16 +237,14 @@ async function fetchUserEmails(request: NextRequest, category?: string) {
      }
 
      // Get recent emails from database
-     const emails = await safeFindMany(prisma.email, {
+     const emails = await prisma.email.findMany({
        where: whereClause,
        orderBy: {
          receivedAt: 'desc'
        },
        take: 10,
-       include: {
-         summary: true
-       }
-     }, 'emails-lookup') as any[]
+
+     }) as any[]
 
     // Transform database emails to the expected format
       return emails.map((email: any) => ({
@@ -284,7 +282,7 @@ function formatEmailsForContext(emails: EmailForContext[]): string {
 // Helper function to get recent conversation history
 async function getConversationHistory(userId: string, limit: number = 3) {
   try {
-    const recentMessages = await safeFindMany(prisma.chatMessage, {
+    const recentMessages = await prisma.chatMessage.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
       take: limit * 2, // Get more to account for user/assistant pairs
@@ -293,7 +291,7 @@ async function getConversationHistory(userId: string, limit: number = 3) {
         content: true,
         createdAt: true
       }
-    }, 'chat-history') as any[]
+    }) as any[]
     
     // Reverse to get chronological order and format for Groq API
     return recentMessages
@@ -311,14 +309,14 @@ async function getConversationHistory(userId: string, limit: number = 3) {
 // Helper function to store chat message
 async function storeChatMessage(userId: string, role: 'user' | 'assistant', content: string, emailId?: string) {
   try {
-    await safeCreate(prisma.chatMessage, {
+    await prisma.chatMessage.create({
       data: {
         userId,
         role,
         content,
         emailId
       }
-    }, 'chat-message-create')
+    })
   } catch (error) {
     console.error('Error storing chat message:', error)
   }
@@ -345,7 +343,7 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = session.user?.email ? 
-      (await safeFindUnique(prisma.user, { where: { email: session.user.email } }, 'user-lookup') as any)?.id : 
+      (await prisma.user.findUnique({ where: { email: session.user.email } }) as any)?.id : 
       null
     
     if (!userId) {
