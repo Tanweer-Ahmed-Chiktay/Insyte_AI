@@ -17,13 +17,23 @@ export class PrismaWrapper {
     context: string = 'database operation'
   ): Promise<T> {
     let lastError: Error | null = null
+    let isPreparedStatementError = false
+    let isConnectionError = false
 
     for (let attempt = 1; attempt <= this.retryCount; attempt++) {
       try {
         // Ensure fresh connection for each retry
         if (attempt > 1) {
-          await prisma.$disconnect()
-          await new Promise(resolve => setTimeout(resolve, this.retryDelay * attempt))
+          try {
+            await prisma.$disconnect()
+            // Force a longer delay for prepared statement errors
+            const delay = isPreparedStatementError ? this.retryDelay * attempt * 2 : this.retryDelay * attempt
+            await new Promise(resolve => setTimeout(resolve, delay))
+            // Force reconnection by making a simple query
+            await prisma.$queryRaw`SELECT 1`
+          } catch (reconnectError) {
+            console.warn(`Reconnection attempt failed:`, reconnectError)
+          }
         }
 
         const result = await operation()
@@ -31,18 +41,23 @@ export class PrismaWrapper {
       } catch (error) {
         lastError = error as Error
         
-        // Check if this is a prepared statement error (PostgreSQL code 26000)
-        const isPreparedStatementError = 
+        // Check if this is a prepared statement error (PostgreSQL codes 26000, 42P05, 08P01)
+        isPreparedStatementError = 
           error instanceof Error && 
           (error.message.includes('prepared statement') || 
-           error.message.includes('26000'))
+           error.message.includes('26000') ||
+           error.message.includes('42P05') ||
+           error.message.includes('08P01') ||
+           error.message.includes('bind message supplies') ||
+           error.message.includes('already exists'))
 
         // Check if this is a connection error
-        const isConnectionError = 
+        isConnectionError = 
           error instanceof Error && 
           (error.message.includes('connection') ||
            error.message.includes('ECONNRESET') ||
-           error.message.includes('ENOTFOUND'))
+           error.message.includes('ENOTFOUND') ||
+           error.message.includes('ConnectorError'))
 
         console.warn(`${context} attempt ${attempt}/${this.retryCount} failed:`, {
           error: error instanceof Error ? error.message : 'Unknown error',
