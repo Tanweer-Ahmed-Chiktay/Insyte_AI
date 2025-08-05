@@ -448,26 +448,49 @@ export function AIAssistant() {
           if (data.useBrowserTTS) {
             console.log('Using browser TTS:', data.message)
             
-            // Use browser speech synthesis
+            // Use browser speech synthesis with enhanced fallback
             if ('speechSynthesis' in window) {
               const utterance = new SpeechSynthesisUtterance(data.text)
               utterance.rate = 0.9
               utterance.pitch = 1
               utterance.volume = 0.8
               
-              // Enhanced voice selection for better quality
-              const voices = speechSynthesis.getVoices()
-              const preferredVoice = voices.find(voice => 
-                voice.name.includes('Google') || 
-                voice.name.includes('Microsoft') ||
-                voice.name.includes('Alex') ||
-                voice.name.includes('Samantha')
-              )
-              if (preferredVoice) {
-                utterance.voice = preferredVoice
+              // Wait for voices to load if needed
+              const speakWithVoice = () => {
+                const voices = speechSynthesis.getVoices()
+                
+                // Enhanced voice selection for better quality
+                const preferredVoice = voices.find(voice => 
+                  voice.name.includes('Google') || 
+                  voice.name.includes('Microsoft') ||
+                  voice.name.includes('Alex') ||
+                  voice.name.includes('Samantha') ||
+                  voice.name.includes('Daniel') ||
+                  voice.name.includes('Karen') ||
+                  (voice.lang.startsWith('en') && voice.localService)
+                )
+                
+                if (preferredVoice) {
+                  utterance.voice = preferredVoice
+                }
+                
+                // Add error handling for speech synthesis
+                utterance.onerror = (event) => {
+                  console.error('Speech synthesis error:', event)
+                }
+                
+                speechSynthesis.speak(utterance)
               }
               
-              speechSynthesis.speak(utterance)
+              // If voices aren't loaded yet, wait for them
+              if (speechSynthesis.getVoices().length === 0) {
+                speechSynthesis.addEventListener('voiceschanged', speakWithVoice, { once: true })
+                // Fallback timeout in case voiceschanged doesn't fire
+                setTimeout(speakWithVoice, 100)
+              } else {
+                speakWithVoice()
+              }
+              
               return
             } else {
               throw new Error('Browser speech synthesis not supported')
@@ -494,7 +517,37 @@ export function AIAssistant() {
         utterance.rate = 0.9
         utterance.pitch = 1
         utterance.volume = 0.8
-        speechSynthesis.speak(utterance)
+        
+        // Enhanced voice selection for final fallback
+        const speakFallback = () => {
+          const voices = speechSynthesis.getVoices()
+          const preferredVoice = voices.find(voice => 
+            voice.name.includes('Google') || 
+            voice.name.includes('Microsoft') ||
+            voice.name.includes('Alex') ||
+            voice.name.includes('Samantha') ||
+            voice.name.includes('Daniel') ||
+            voice.name.includes('Karen') ||
+            (voice.lang.startsWith('en') && voice.localService)
+          )
+          
+          if (preferredVoice) {
+            utterance.voice = preferredVoice
+          }
+          
+          utterance.onerror = (event) => {
+            console.error('Final fallback speech synthesis error:', event)
+          }
+          
+          speechSynthesis.speak(utterance)
+        }
+        
+        if (speechSynthesis.getVoices().length === 0) {
+          speechSynthesis.addEventListener('voiceschanged', speakFallback, { once: true })
+          setTimeout(speakFallback, 100)
+        } else {
+          speakFallback()
+        }
       } else {
         // Defer toast to avoid render-time updates
         setTimeout(() => {

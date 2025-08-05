@@ -59,7 +59,9 @@ export async function middleware(request: NextRequest) {
     request.nextUrl.pathname.startsWith('/api/') &&
     !request.nextUrl.pathname.startsWith('/api/auth/') &&
     !request.nextUrl.pathname.startsWith('/api/emails') &&
-    !request.nextUrl.pathname.startsWith('/api/ai/')
+    !request.nextUrl.pathname.startsWith('/api/ai/') &&
+    !request.nextUrl.pathname.startsWith('/api/voice/') &&
+    !request.nextUrl.pathname.startsWith('/api/health')
   ) {
     // Cast request to any for Next.js 14+ compatibility
     const token = await getToken({

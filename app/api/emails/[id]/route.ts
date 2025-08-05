@@ -105,6 +105,8 @@ export async function GET(
     const subject = headers.find(h => h.name === 'Subject')?.value || 'No Subject'
     const from = headers.find(h => h.name === 'From')?.value || 'Unknown Sender'
     const to = headers.find(h => h.name === 'To')?.value || ''
+    const cc = headers.find(h => h.name === 'Cc')?.value || ''
+    const bcc = headers.find(h => h.name === 'Bcc')?.value || ''
     const date = headers.find(h => h.name === 'Date')?.value || new Date().toISOString()
     
     // Extract email content
@@ -120,7 +122,9 @@ export async function GET(
       subject,
       from,
       to,
-      date: new Date(date).toISOString(),
+      cc,
+      bcc,
+      receivedAt: new Date(date).toISOString(),
       htmlBody,
       textBody,
       attachments,

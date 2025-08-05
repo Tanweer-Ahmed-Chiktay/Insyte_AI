@@ -5,10 +5,16 @@ const globalForPrisma = globalThis as unknown as {
 }
 
 const getDatabaseUrl = () => {
-  const baseUrl = process.env.DATABASE_URL || ''
-  const separator = baseUrl.includes('?') ? '&' : '?'
-  // Optimize for serverless with pgbouncer and connection limits
-  return `${baseUrl}${separator}pgbouncer=true&prepared_statements=false&connection_limit=1&pool_timeout=20`
+  let databaseUrl = process.env.DATABASE_URL || ''
+  
+  // Only apply serverless optimizations in production/Vercel
+  if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+    const separator = databaseUrl.includes('?') ? '&' : '?'
+    // Optimize for serverless with pgbouncer and connection limits
+    databaseUrl = `${databaseUrl}${separator}pgbouncer=true&prepared_statements=false&connection_limit=1&pool_timeout=20`
+  }
+  
+  return databaseUrl
 }
 
 export const prisma =

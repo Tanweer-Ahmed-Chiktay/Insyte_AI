@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     await prisma.$queryRaw`SELECT 1 as test`
     
     // Test a simple table query to verify schema
-    await prisma.$queryRaw`SELECT COUNT(*) FROM "User"`
+    await prisma.$queryRaw`SELECT COUNT(*) FROM "users"`
     
     diagnostics.checks.database.status = 'connected'
   } catch (error) {

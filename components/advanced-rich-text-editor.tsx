@@ -22,7 +22,12 @@ import FontFamily from '@tiptap/extension-font-family'
 import Highlight from '@tiptap/extension-highlight'
 import Link from '@tiptap/extension-link'
 import HorizontalRule from '@tiptap/extension-horizontal-rule'
+import { Node, mergeAttributes } from '@tiptap/core'
+import { ReactNodeViewRenderer } from '@tiptap/react'
 import { createLowlight } from 'lowlight'
+import { marked } from 'marked'
+import TurndownService from 'turndown'
+import { autoConvertMarkdown } from '@/lib/markdown-to-html'
 import {
   Bold,
   Italic,
@@ -87,6 +92,133 @@ interface Template {
   name: string
   content: string
 }
+
+// Custom Markdown Block Component
+const MarkdownBlockComponent = ({ node, updateAttributes, deleteNode }: any) => {
+  const [isEditing, setIsEditing] = useState(false)
+  const [content, setContent] = useState(node.attrs.content || '')
+  const [htmlPreview, setHtmlPreview] = useState('')
+
+  useEffect(() => {
+    const convertToHtml = async () => {
+      try {
+        const html = await autoConvertMarkdown(content)
+        setHtmlPreview(html)
+      } catch (error) {
+        setHtmlPreview(content)
+      }
+    }
+    convertToHtml()
+  }, [content])
+
+  const handleSave = () => {
+    updateAttributes({ content })
+    setIsEditing(false)
+  }
+
+  const handleCancel = () => {
+    setContent(node.attrs.content || '')
+    setIsEditing(false)
+  }
+
+  return (
+    <div className="my-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50 dark:bg-slate-800 dark:border-slate-700">
+      <div className="flex items-center justify-between px-3 py-2 bg-slate-100 dark:bg-slate-700 border-b border-slate-200 dark:border-slate-600">
+        <div className="flex items-center gap-2">
+          <FileText className="h-4 w-4 text-slate-600 dark:text-slate-400" />
+          <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Markdown Block</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsEditing(!isEditing)}
+            className="h-6 px-2"
+          >
+            {isEditing ? <Eye className="h-3 w-3" /> : <Edit className="h-3 w-3" />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={deleteNode}
+            className="h-6 px-2 text-red-600 hover:text-red-700"
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        </div>
+      </div>
+      <div className="p-3">
+        {isEditing ? (
+          <div className="space-y-3">
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="w-full h-32 p-3 border border-slate-200 rounded-md font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+              placeholder="Write your markdown here..."
+            />
+            <div className="flex items-center gap-2">
+              <Button variant="default" size="sm" onClick={handleSave}>
+                Save
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleCancel}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div 
+            className="prose prose-sm max-w-none dark:prose-invert cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 rounded p-2 transition-colors"
+            onClick={() => setIsEditing(true)}
+            dangerouslySetInnerHTML={{ __html: htmlPreview }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Custom Markdown Block Extension
+const MarkdownBlock = Node.create({
+  name: 'markdownBlock',
+  group: 'block',
+  content: '',
+  atom: true,
+
+  addAttributes() {
+    return {
+      content: {
+        default: '',
+      },
+    }
+  },
+
+  parseHTML() {
+    return [
+      {
+        tag: 'div[data-type="markdown-block"]',
+      },
+    ]
+  },
+
+  renderHTML({ HTMLAttributes, node }) {
+    // Convert markdown content to HTML when serializing
+    const content = node.attrs.content || ''
+    if (content.trim()) {
+      // For email serialization, we'll let the API handle the conversion
+      // Just wrap the content in a special marker that the API can detect
+      return ['div', mergeAttributes(HTMLAttributes, { 
+        'data-type': 'markdown-block',
+        'data-markdown-content': content,
+        'class': 'markdown-content'
+      }), content]
+    }
+    return ['div', mergeAttributes(HTMLAttributes, { 'data-type': 'markdown-block' })]
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(MarkdownBlockComponent)
+  },
+})
 
 interface AdvancedRichTextEditorProps {
   value: string
@@ -231,6 +363,9 @@ export function AdvancedRichTextEditor({
   const [showTemplates, setShowTemplates] = useState(false)
   const [showMoreOptions, setShowMoreOptions] = useState(false)
   const [showFontSizePicker, setShowFontSizePicker] = useState(false)
+  const [markdownContent, setMarkdownContent] = useState('')
+  const [htmlContent, setHtmlContent] = useState('')
+  const [markdownInputValue, setMarkdownInputValue] = useState('')
 
   // Load Google Fonts
   useEffect(() => {
@@ -246,8 +381,61 @@ export function AdvancedRichTextEditor({
     }
   }, [])
 
-  // Configure lowlight
-  const lowlight = createLowlight()
+  // Configure lowlight with more languages
+  const [lowlight, setLowlight] = useState<any>(null)
+  
+  // Import common languages for syntax highlighting
+  useEffect(() => {
+    const loadLanguages = async () => {
+      try {
+        const lowlightInstance = createLowlight()
+        
+        const { default: javascript } = await import('highlight.js/lib/languages/javascript')
+        const { default: typescript } = await import('highlight.js/lib/languages/typescript')
+        const { default: python } = await import('highlight.js/lib/languages/python')
+        const { default: java } = await import('highlight.js/lib/languages/java')
+        const { default: cpp } = await import('highlight.js/lib/languages/cpp')
+        const { default: css } = await import('highlight.js/lib/languages/css')
+        const { default: html } = await import('highlight.js/lib/languages/xml')
+        const { default: json } = await import('highlight.js/lib/languages/json')
+        const { default: sql } = await import('highlight.js/lib/languages/sql')
+        const { default: bash } = await import('highlight.js/lib/languages/bash')
+        
+        lowlightInstance.register('javascript', javascript)
+        lowlightInstance.register('typescript', typescript)
+        lowlightInstance.register('python', python)
+        lowlightInstance.register('java', java)
+        lowlightInstance.register('cpp', cpp)
+        lowlightInstance.register('css', css)
+        lowlightInstance.register('html', html)
+        lowlightInstance.register('json', json)
+        lowlightInstance.register('sql', sql)
+        lowlightInstance.register('bash', bash)
+        
+        setLowlight(lowlightInstance)
+      } catch (error) {
+        console.warn('Failed to load syntax highlighting languages:', error)
+        // Create a basic lowlight instance as fallback
+        setLowlight(createLowlight())
+      }
+    }
+    loadLanguages()
+  }, [])
+
+  // Initialize markdown converter
+  const turndownService = new TurndownService({
+    headingStyle: 'atx',
+    codeBlockStyle: 'fenced'
+  })
+
+  // Markdown conversion functions
+  const htmlToMarkdown = useCallback((html: string) => {
+    return turndownService.turndown(html)
+  }, [])
+
+  const markdownToHtml = useCallback(async (markdown: string) => {
+    return await marked(markdown)
+  }, [])
 
   // Configure Tiptap editor
   const editor = useEditor({
@@ -255,6 +443,9 @@ export function AdvancedRichTextEditor({
     extensions: [
       StarterKit.configure({
         codeBlock: false,
+        link: false,
+        underline: false,
+        horizontalRule: false,
       }),
       Table.configure({
         resizable: true,
@@ -266,9 +457,8 @@ export function AdvancedRichTextEditor({
         inline: true,
         allowBase64: true,
       }),
-      CodeBlockLowlight.configure({
-        lowlight,
-      }),
+      ...(lowlight ? [CodeBlockLowlight.configure({ lowlight })] : []),
+      MarkdownBlock,
       Mention.configure({
         HTMLAttributes: {
           class: 'mention bg-blue-100 text-blue-800 px-1 rounded',
@@ -324,26 +514,101 @@ export function AdvancedRichTextEditor({
         class: 'prose prose-sm max-w-none focus:outline-none min-h-[400px] p-6',
       },
     },
-  })
+  }, [lowlight])
+
+  // Toggle markdown mode
+  const toggleMarkdownMode = useCallback(async () => {
+    if (!editor) return
+
+    if (isMarkdownMode) {
+      // Converting from markdown to HTML
+      try {
+        const html = await markdownToHtml(markdownContent)
+        editor.commands.setContent(html)
+        setHtmlContent(html)
+        setIsMarkdownMode(false)
+      } catch (error) {
+        console.error('Error converting markdown to HTML:', error)
+      }
+    } else {
+      // Converting from HTML to markdown
+      const html = editor.getHTML()
+      const markdown = htmlToMarkdown(html)
+      setMarkdownContent(markdown)
+      setMarkdownInputValue(markdown)
+      setHtmlContent(html)
+      setIsMarkdownMode(true)
+    }
+  }, [editor, isMarkdownMode, markdownContent, htmlToMarkdown, markdownToHtml])
+
+  // Debounced markdown input handler
+  useEffect(() => {
+    const inputTimer = setTimeout(() => {
+      setMarkdownContent(markdownInputValue)
+    }, 150) // 150ms debounce for input
+
+    return () => clearTimeout(inputTimer)
+  }, [markdownInputValue])
+
+  // Initialize markdown content from HTML value
+  useEffect(() => {
+    if (value && !markdownContent && !isMarkdownMode) {
+      const markdown = htmlToMarkdown(value)
+      setMarkdownContent(markdown)
+      setMarkdownInputValue(markdown)
+      setHtmlContent(value)
+    }
+  }, [value, markdownContent, isMarkdownMode, htmlToMarkdown])
+
+  // Real-time markdown preview update with debouncing
+  useEffect(() => {
+    if (!isMarkdownMode || !markdownContent) return
+
+    const debounceTimer = setTimeout(() => {
+      markdownToHtml(markdownContent).then(html => {
+        setHtmlContent(html)
+      }).catch(error => {
+        console.error('Error converting markdown to HTML:', error)
+        setHtmlContent(markdownContent) // Fallback to raw markdown
+      })
+    }, 300) // 300ms debounce
+
+    return () => clearTimeout(debounceTimer)
+  }, [markdownContent, isMarkdownMode, markdownToHtml])
+
+  // Sync markdown changes back to HTML when switching modes (debounced)
+  useEffect(() => {
+    if (!isMarkdownMode || !markdownContent) return
+
+    const syncTimer = setTimeout(() => {
+      markdownToHtml(markdownContent).then(html => {
+        onChange(html)
+      }).catch(error => {
+        console.error('Error syncing markdown to HTML:', error)
+      })
+    }, 500) // 500ms debounce for onChange to reduce frequent updates
+
+    return () => clearTimeout(syncTimer)
+  }, [markdownContent, isMarkdownMode, markdownToHtml, onChange])
 
   // Auto-save functionality
   useEffect(() => {
     if (!editor || !composeData || !onAutoSave) return
 
     const autoSaveInterval = setInterval(() => {
-      const content = editor.getHTML()
+      const content = isMarkdownMode ? htmlContent : editor.getHTML()
       if (content.trim() && (composeData.to || composeData.subject)) {
         onAutoSave({
           to: composeData.to,
           subject: composeData.subject,
           body: content,
-          attachments: attachments.map(att => att.name)
+          timestamp: new Date().toISOString()
         })
       }
-    }, 10000)
+    }, 30000) // Auto-save every 30 seconds
 
     return () => clearInterval(autoSaveInterval)
-  }, [editor, composeData, attachments, onAutoSave])
+  }, [editor, composeData, onAutoSave, isMarkdownMode, htmlContent])
 
   // AI Assistant Functions
   const callAI = async (prompt: string, selectedText: string) => {
@@ -859,6 +1124,36 @@ export function AdvancedRichTextEditor({
             >
               <Code className="h-4 w-4" />
             </Button>
+            <Button
+              variant={editor.isActive('codeBlock') ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => {
+                if (editor.isActive('codeBlock')) {
+                  editor.chain().focus().toggleCodeBlock().run()
+                } else {
+                  editor.chain().focus().toggleCodeBlock({ language: 'javascript' }).run()
+                }
+              }}
+              title="Insert Code Block with Syntax Highlighting"
+            >
+              <Code className="h-4 w-4" />
+              <span className="ml-1 text-xs">{ }</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                editor.chain().focus().insertContent({
+                  type: 'markdownBlock',
+                  attrs: {
+                    content: '# Your markdown here\n\nWrite your **markdown** content here...'
+                  }
+                }).run()
+              }}
+              title="Insert Markdown Block"
+            >
+              <FileText className="h-4 w-4" />
+            </Button>
             
             <Separator orientation="vertical" className="h-6 mx-1" />
             
@@ -973,11 +1268,21 @@ export function AdvancedRichTextEditor({
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
-                variant="outline"
-                onClick={() => setIsMarkdownMode(!isMarkdownMode)}
+                variant={isMarkdownMode ? "default" : "outline"}
+                onClick={toggleMarkdownMode}
+                className={isMarkdownMode ? "bg-blue-600 text-white hover:bg-blue-700" : ""}
               >
-                {isMarkdownMode ? <Eye className="h-4 w-4 mr-1" /> : <Edit className="h-4 w-4 mr-1" />}
-                {isMarkdownMode ? 'Preview' : 'Markdown'}
+                {isMarkdownMode ? (
+                  <>
+                    <Monitor className="h-4 w-4 mr-1" />
+                    Back to Rich Editor
+                  </>
+                ) : (
+                  <>
+                    <Edit className="h-4 w-4 mr-1" />
+                    Markdown Mode
+                  </>
+                )}
               </Button>
               <Button
                 size="sm"
@@ -990,10 +1295,29 @@ export function AdvancedRichTextEditor({
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  const content = editor?.getHTML()
-                  navigator.clipboard.writeText(content || '')
-                }}
+                onClick={async () => {
+                let content
+                if (isMarkdownMode) {
+                  // If in markdown mode, use the HTML content that was converted from markdown
+                  content = htmlContent
+                } else {
+                  // If in rich text mode, get HTML from editor
+                  content = editor?.getHTML()
+                }
+                
+                if (content) {
+                  console.log('Original content for copy:', content)
+                  console.log('Is markdown mode:', isMarkdownMode)
+                  try {
+                    const processedContent = await autoConvertMarkdown(content)
+                    console.log('Processed HTML:', processedContent)
+                    navigator.clipboard.writeText(processedContent)
+                  } catch (error) {
+                    console.error('Error processing HTML for copy:', error)
+                    navigator.clipboard.writeText(content)
+                  }
+                }
+              }}
               >
                 <Save className="h-4 w-4 mr-1" />
                 Copy HTML
@@ -1004,10 +1328,107 @@ export function AdvancedRichTextEditor({
         
         {/* Editor Content */}
         <div className="relative bg-white">
-          <EditorContent 
-            editor={editor} 
-            className="prose prose-slate max-w-none min-h-[400px] p-6 focus-within:bg-slate-50/30 transition-colors duration-200 [&_.ProseMirror]:bg-white [&_.ProseMirror]:text-black [&_.ProseMirror]:min-h-full [&_.ProseMirror]:outline-none"
-          />
+          {isMarkdownMode ? (
+            <div className="min-h-[400px] flex">
+              {/* Markdown Editor */}
+              <div className="flex-1 border-r border-slate-200 dark:border-slate-700">
+                <div className="bg-slate-50 dark:bg-slate-800 px-4 py-2 border-b border-slate-200 dark:border-slate-700">
+                   <div className="flex items-center justify-between">
+                     <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300">Markdown</h4>
+                     <div className="flex items-center gap-1">
+                       <Button
+                         variant="ghost"
+                         size="sm"
+                         onClick={() => {
+                           const textarea = document.querySelector('textarea')
+                           if (textarea) {
+                             const start = textarea.selectionStart
+                             const end = textarea.selectionEnd
+                             const selectedText = markdownInputValue.substring(start, end)
+                             const newText = markdownInputValue.substring(0, start) + `**${selectedText}**` + markdownInputValue.substring(end)
+                             setMarkdownInputValue(newText)
+                           }
+                         }}
+                         className="h-6 w-6 p-0"
+                       >
+                         <Bold className="h-3 w-3" />
+                       </Button>
+                       <Button
+                         variant="ghost"
+                         size="sm"
+                         onClick={() => {
+                           const textarea = document.querySelector('textarea')
+                           if (textarea) {
+                             const start = textarea.selectionStart
+                             const end = textarea.selectionEnd
+                             const selectedText = markdownInputValue.substring(start, end)
+                             const newText = markdownInputValue.substring(0, start) + `*${selectedText}*` + markdownInputValue.substring(end)
+                             setMarkdownInputValue(newText)
+                           }
+                         }}
+                         className="h-6 w-6 p-0"
+                       >
+                         <Italic className="h-3 w-3" />
+                       </Button>
+                       <Button
+                         variant="ghost"
+                         size="sm"
+                         onClick={() => {
+                           const textarea = document.querySelector('textarea')
+                           if (textarea) {
+                             const start = textarea.selectionStart
+                             const newText = markdownInputValue.substring(0, start) + '\n# ' + markdownInputValue.substring(start)
+                             setMarkdownInputValue(newText)
+                           }
+                         }}
+                         className="h-6 w-6 p-0"
+                       >
+                         <Heading1 className="h-3 w-3" />
+                       </Button>
+                       <Button
+                         variant="ghost"
+                         size="sm"
+                         onClick={() => {
+                           const textarea = document.querySelector('textarea')
+                           if (textarea) {
+                             const start = textarea.selectionStart
+                             const newText = markdownInputValue.substring(0, start) + '\n- ' + markdownInputValue.substring(start)
+                             setMarkdownInputValue(newText)
+                           }
+                         }}
+                         className="h-6 w-6 p-0"
+                       >
+                         <List className="h-3 w-3" />
+                       </Button>
+                     </div>
+                   </div>
+                 </div>
+                <textarea
+                   value={markdownInputValue}
+                   onChange={(e) => setMarkdownInputValue(e.target.value)}
+                  className="w-full h-full min-h-[400px] p-4 border-0 resize-none focus:outline-none font-mono text-sm bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                  placeholder="Write your content in Markdown...\n\n# Heading 1\n## Heading 2\n\n**Bold text**\n*Italic text*\n\n- List item 1\n- List item 2\n\n[Link text](https://example.com)\n\n```\nCode block\n```"
+                />
+              </div>
+              {/* Preview */}
+              <div className="flex-1">
+                <div className="bg-slate-50 dark:bg-slate-800 px-4 py-2 border-b border-slate-200 dark:border-slate-700">
+                  <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300">Preview</h4>
+                </div>
+                <div className="p-4 min-h-[400px] overflow-y-auto">
+                  <div 
+                    className="prose prose-sm max-w-none dark:prose-invert"
+                    dangerouslySetInnerHTML={{ __html: htmlContent }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <EditorContent 
+              editor={editor} 
+              className="prose prose-slate max-w-none min-h-[400px] p-6 focus-within:bg-slate-50/30 transition-colors duration-200 [&_.ProseMirror]:bg-white [&_.ProseMirror]:text-black [&_.ProseMirror]:min-h-full [&_.ProseMirror]:outline-none"
+            />
+          )}
           
           {/* Floating Selection Toolbar */}
           {selectedText && (

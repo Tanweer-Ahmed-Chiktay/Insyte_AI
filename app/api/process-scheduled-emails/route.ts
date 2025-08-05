@@ -3,6 +3,7 @@ import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
 // Removed prisma-wrapper - using prisma directly
 import type { ScheduledEmail, User, Account } from '@prisma/client'
+import { autoConvertMarkdown } from '@/lib/markdown-to-html'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
           }
         }
       },
-      take: 10 // Process max 10 emails at a time
+      take: 5 // Reduced from 10 to 5 to avoid rate limits
     }) as (ScheduledEmail & {
       user: User & {
         accounts: Account[]
@@ -68,6 +69,9 @@ export async function POST(request: NextRequest) {
 
         const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
 
+        // Auto-convert Markdown to HTML with syntax highlighting if needed
+        const processedHtmlBody = await autoConvertMarkdown(scheduledEmail.htmlBody)
+        
         // Prepare email content
         const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         
@@ -86,7 +90,7 @@ export async function POST(request: NextRequest) {
           emailContent.push('Content-Type: text/html; charset=utf-8')
           emailContent.push('Content-Transfer-Encoding: 7bit')
           emailContent.push('')
-          emailContent.push(scheduledEmail.htmlBody)
+          emailContent.push(processedHtmlBody)
           
           // Add attachments
           for (const attachment of scheduledEmail.attachments as any[]) {
@@ -105,7 +109,7 @@ export async function POST(request: NextRequest) {
           // Simple HTML email
           emailContent.push('Content-Type: text/html; charset=utf-8')
           emailContent.push('')
-          emailContent.push(scheduledEmail.htmlBody)
+          emailContent.push(processedHtmlBody)
         }
         
         const finalEmailContent = emailContent.join('\n')
@@ -117,13 +121,38 @@ export async function POST(request: NextRequest) {
           .replace(/\//g, '_')
           .replace(/=+$/, '')
 
-        // Send email
-        const result = await gmail.users.messages.send({
-          userId: 'me',
-          requestBody: {
-            raw: encodedEmail
+        // Send email with retry logic for rate limits
+        let result: any = null
+        let retryCount = 0
+        const maxRetries = 3
+        
+        while (retryCount < maxRetries) {
+          try {
+            result = await gmail.users.messages.send({
+              userId: 'me',
+              requestBody: {
+                raw: encodedEmail
+              }
+            })
+            break // Success, exit retry loop
+          } catch (sendError: any) {
+            if (sendError.code === 429 || sendError.message?.includes('Too Many Requests')) {
+              retryCount++
+              if (retryCount < maxRetries) {
+                // Exponential backoff: wait 2^retryCount seconds
+                const waitTime = Math.pow(2, retryCount) * 1000
+                console.log(`Rate limited, waiting ${waitTime}ms before retry ${retryCount}/${maxRetries}`)
+                await new Promise(resolve => setTimeout(resolve, waitTime))
+                continue
+              }
+            }
+            throw sendError // Re-throw if not rate limit or max retries reached
           }
-        })
+        }
+
+        if (!result) {
+          throw new Error('Failed to send email after all retries')
+        }
 
         // Update status to sent
         await prisma.scheduledEmail.update({
@@ -135,7 +164,7 @@ export async function POST(request: NextRequest) {
         })
 
         // Store sent email in database with proper labels
-        if (result.data.id) {
+        if (result.data?.id) {
           try {
             await prisma.email.create({
               data: {
@@ -171,26 +200,45 @@ export async function POST(request: NextRequest) {
           messageId: result.data.id
         })
 
-      } catch (error) {
+      } catch (error: any) {
         console.error(`Failed to send scheduled email ${scheduledEmail.id}:`, error)
         
-        // Update status to failed if max attempts reached, otherwise back to pending
-        const maxAttempts = 3
-        const newStatus = scheduledEmail.attempts >= maxAttempts ? 'failed' : 'pending'
-        
-        await prisma.scheduledEmail.update({
-          where: { id: scheduledEmail.id },
-          data: { 
-            status: newStatus,
-            lastError: error instanceof Error ? error.message : 'Unknown error'
-          }
-        })
+        // Handle rate limiting specifically
+        if (error.code === 429 || error.message?.includes('Too Many Requests')) {
+          // For rate limit errors, keep as pending and try again later
+          await prisma.scheduledEmail.update({
+            where: { id: scheduledEmail.id },
+            data: { 
+              status: 'pending',
+              lastError: 'Rate limited - will retry later',
+              // Don't increment attempts for rate limit errors
+            }
+          })
+          
+          results.push({
+            id: scheduledEmail.id,
+            status: 'rate_limited',
+            error: 'Rate limited - will retry later'
+          })
+        } else {
+          // Update status to failed if max attempts reached, otherwise back to pending
+          const maxAttempts = 3
+          const newStatus = scheduledEmail.attempts >= maxAttempts ? 'failed' : 'pending'
+          
+          await prisma.scheduledEmail.update({
+            where: { id: scheduledEmail.id },
+            data: { 
+              status: newStatus,
+              lastError: error instanceof Error ? error.message : 'Unknown error'
+            }
+          })
 
-        results.push({
-          id: scheduledEmail.id,
-          status: newStatus,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        })
+          results.push({
+            id: scheduledEmail.id,
+            status: newStatus,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          })
+        }
       }
     }
 

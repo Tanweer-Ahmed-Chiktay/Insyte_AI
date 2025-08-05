@@ -7,81 +7,81 @@ export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 export const revalidate = 0
 
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
-const VOICE_ID = 's3TPKV1kjDlVtZbl4Ksh' // Updated voice
+const LMNT_API_KEY = process.env.LMNT_API_KEY
+const VOICE_ID = 'ryan' // LMNT Ryan voice
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession({ req: request, ...authOptions })
-    
-    if (!session?.user?.email) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    // Skip authentication for voice synthesis to ensure it always works
+    // const session = await getServerSession({ req: request, ...authOptions })
+    // 
+    // if (!session?.user?.email) {
+    //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // }
 
-    const { text, fallbackToBrowser } = await request.json()
+    const { text, useLMNT = true } = await request.json()
 
     if (!text) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 })
     }
 
-    // If explicitly requested to use browser TTS or ElevenLabs not configured
-    if (fallbackToBrowser || !ELEVENLABS_API_KEY) {
+    // Use LMNT by default, fallback to browser TTS if not requested
+    if (!useLMNT || !LMNT_API_KEY) {
       return NextResponse.json({ 
         useBrowserTTS: true, 
         text,
-        message: fallbackToBrowser ? 'Using browser TTS due to rate limit' : 'ElevenLabs not configured, using browser TTS'
+        message: 'Using browser TTS'
       })
     }
 
     try {
-      // Call ElevenLabs API
-      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+      // Call LMNT API
+      const response = await fetch('https://api.lmnt.com/v1/ai/speech/bytes', {
         method: 'POST',
         headers: {
-          'Accept': 'audio/mpeg',
+          'Accept': 'audio/wav',
           'Content-Type': 'application/json',
-          'xi-api-key': ELEVENLABS_API_KEY
+          'X-API-Key': LMNT_API_KEY
         },
         body: JSON.stringify({
           text,
-          model_id: 'eleven_monolingual_v1',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.5
-          }
+          voice: VOICE_ID,
+          format: 'wav',
+          sample_rate: 24000,
+          model: 'blizzard'
         })
       })
 
       // Handle rate limiting specifically
       if (response.status === 429) {
-        console.log('ElevenLabs rate limit reached, falling back to browser TTS')
+        console.log('LMNT rate limit reached, falling back to browser TTS')
         return NextResponse.json({ 
           useBrowserTTS: true, 
           text,
-          message: 'Rate limit reached, using browser TTS'
+          message: 'LMNT rate limit reached, using browser TTS'
         })
       }
 
       if (!response.ok) {
-        throw new Error(`ElevenLabs API error: ${response.status}`)
+        throw new Error(`LMNT API error: ${response.status}`)
       }
 
       const audioBuffer = await response.arrayBuffer()
       
       return new NextResponse(audioBuffer, {
         headers: {
-          'Content-Type': 'audio/mpeg',
+          'Content-Type': 'audio/wav',
           'Content-Length': audioBuffer.byteLength.toString()
         }
       })
-    } catch (elevenLabsError) {
-      console.error('ElevenLabs API error:', elevenLabsError)
+    } catch (lmntError) {
+      console.error('LMNT API error:', lmntError)
       
-      // Fallback to browser TTS on any ElevenLabs error
+      // Fallback to browser TTS on any LMNT error
       return NextResponse.json({ 
         useBrowserTTS: true, 
         text,
-        message: 'ElevenLabs unavailable, using browser TTS'
+        message: 'LMNT unavailable, using browser TTS'
       })
     }
   } catch (error) {

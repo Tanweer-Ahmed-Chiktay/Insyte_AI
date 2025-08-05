@@ -547,10 +547,10 @@ When users ask follow-up questions like "yes" or "show me more", refer to previo
               audioUrl = 'USE_BROWSER_TTS'
             }
           } else {
-            // Handle audio blob response (ElevenLabs)
+            // Handle audio blob response (LMNT)
             const audioBuffer = await voiceResponse.arrayBuffer()
             const base64Audio = Buffer.from(audioBuffer).toString('base64')
-            audioUrl = `data:audio/mpeg;base64,${base64Audio}`
+            audioUrl = `data:audio/wav;base64,${base64Audio}`
           }
         }
       } catch (voiceError) {

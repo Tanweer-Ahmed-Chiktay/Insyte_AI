@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
+import { autoConvertMarkdown } from '@/lib/markdown-to-html'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
@@ -24,9 +25,12 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData()
     const to = formData.get('to') as string
     const subject = formData.get('subject') as string
-    const htmlBody = formData.get('htmlBody') as string
+    const rawHtmlBody = formData.get('htmlBody') as string
     const attachmentCount = parseInt(formData.get('attachmentCount') as string || '0')
     const scheduledAt = formData.get('scheduledAt') as string
+    
+    // Auto-convert Markdown to HTML with syntax highlighting if needed
+    const htmlBody = await autoConvertMarkdown(rawHtmlBody)
 
     // Input validation
     if (!to || !subject || !htmlBody) {
@@ -173,12 +177,16 @@ export async function POST(request: NextRequest) {
       .replace(/=+$/, '')
 
     // Send email
+    console.log('Attempting to send email to:', to)
+    console.log('From:', token.email)
     const result = await gmail.users.messages.send({
       userId: 'me',
       requestBody: {
         raw: encodedEmail
       }
     })
+    console.log('Gmail API response:', result.data)
+    console.log('Email send result - ID:', result.data.id, 'ThreadID:', result.data.threadId)
 
     // Store sent email in database with proper labels
     if (result.data.id) {
@@ -235,8 +243,31 @@ export async function POST(request: NextRequest) {
       }, { status: 401 })
     }
     
+    // Handle rate limiting errors
+    if (error && typeof error === 'object' && 'code' in error && error.code === 429) {
+      return NextResponse.json({ 
+        error: 'Rate limit exceeded', 
+        message: 'Too many requests. Please try again later.',
+        retryAfter: 60 
+      }, { status: 429 })
+    }
+    
+    // Handle quota exceeded errors
+    if (error && typeof error === 'object' && 'message' in error && 
+        (error.message as string).toLowerCase().includes('quota')) {
+      return NextResponse.json({ 
+        error: 'Gmail API quota exceeded', 
+        message: 'Daily email quota reached. Please try again tomorrow.',
+      }, { status: 429 })
+    }
+    
+    // Provide more specific error message
+    const errorMessage = error && typeof error === 'object' && 'message' in error 
+      ? error.message as string 
+      : 'Failed to send email'
+    
     return NextResponse.json(
-      { error: 'Failed to send email' },
+      { error: errorMessage },
       { status: 500 }
     )
   }

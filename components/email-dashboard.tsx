@@ -46,6 +46,15 @@ import { AIAssistant } from '@/components/ai-assistant'
 import { ContactsTab } from '@/components/contacts-tab'
 import { startEmailScheduler } from '@/lib/scheduler'
 import DOMPurify from 'dompurify'
+import { useEmailCache, useEmailPersistence, usePrefetchEmails } from '@/hooks/use-email-cache'
+import useEmailStore from '@/lib/email-store'
+import EmailDashboardWithPanes from './email-dashboard-with-panes'
+import { 
+  EmailListSkeleton, 
+  EmailDetailSkeleton, 
+  EmailSidebarSkeleton,
+  EmailStatsCardSkeleton 
+} from '@/components/ui/skeleton-loader'
 
 // Cache utility functions
 const CACHE_KEYS = {
@@ -90,7 +99,7 @@ interface Email {
   subject: string
   from: string
   snippet: string
-  date: string
+  receivedAt: string
   isRead: boolean
   isStarred: boolean
   isImportant: boolean
@@ -114,9 +123,6 @@ interface FullEmail extends Email {
 interface EmailSummary {
   id: string
   summary: string
-  sentiment: string
-  priority: string
-  category: string
   keyPoints: string[]
   actionItems: string[]
   createdAt: string
@@ -142,15 +148,17 @@ function SafeHTMLRenderer({ htmlContent }: { htmlContent: string }) {
 }
 
 export function EmailDashboard() {
+  return <EmailDashboardWithPanes />
+}
+
+// Keep the original for reference
+export function EmailDashboardOriginal() {
   const { data: session } = useSession()
   const { toast } = useToast()
-  const [emails, setEmails] = useState<Email[]>([])
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null)
   const [fullEmailContent, setFullEmailContent] = useState<FullEmail | null>(null)
   const [emailSummary, setEmailSummary] = useState<EmailSummary | null>(null)
   const [isLoadingFullEmail, setIsLoadingFullEmail] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [currentSection, setCurrentSection] = useState('inbox')
@@ -181,151 +189,74 @@ export function EmailDashboard() {
   const [isMobilePreviewOpen, setIsMobilePreviewOpen] = useState(false)
   const [generatingSummaries, setGeneratingSummaries] = useState<Set<string>>(new Set())
 
+  // Use SWR-based email caching
+  const { 
+    emails, 
+    cacheInfo, 
+    isLoading, 
+    isValidating, 
+    error, 
+    refresh, 
+    backgroundSync,
+    loadOlderEmails,
+    hasMore,
+    nextOlderThan
+  } = useEmailCache({ 
+    category: currentSection, 
+    revalidateOnFocus: false,
+    maxAgeMinutes: 5,
+    enablePrefetch: true
+  })
+
+  // Use localStorage persistence
+  useEmailPersistence()
+
+  // Use prefetch hook for background loading
+  const { prefetch } = usePrefetchEmails()
+
+  // Get email store for additional functionality
+  const emailStore = useEmailStore()
+
+  const isRefreshing = isValidating
+
   // Function to clear email cache
   const clearEmailCache = () => {
     localStorage.removeItem(CACHE_KEYS.EMAILS)
     localStorage.removeItem(CACHE_KEYS.EMAIL_SUMMARIES)
     localStorage.removeItem(CACHE_KEYS.LAST_EMAIL_FETCH)
+    emailStore.clearAll()
     toast({
       title: 'Cache Cleared',
       description: 'Email cache has been cleared. Refreshing emails...'
     })
-    loadEmails()
+    refresh(true) // Force refresh with SWR
   }
 
   useEffect(() => {
     if (session) {
-      // Initialize email scheduler
-      startEmailScheduler()
-      
-      // Load cached emails first
-      const cachedEmails = loadFromCache(CACHE_KEYS.EMAILS, 30 * 60 * 1000) // 30 minutes
-      if (cachedEmails) {
-        setEmails(cachedEmails)
-        setIsLoading(false)
-        // Load new emails in background
-        loadEmails(false, true)
-      } else {
-        loadEmails()
+      // Note: Email scheduler is auto-started in production via scheduler.ts
+      // In development, we start it once when user is authenticated
+      if (process.env.NODE_ENV === 'development') {
+        startEmailScheduler()
       }
+      
+      // Background sync on login
+      backgroundSync()
+      
+      // Prefetch other categories
+       const categories = ['sent', 'starred', 'important']
+       categories.forEach(category => {
+         if (category !== currentSection) {
+           prefetch([category])
+         }
+       })
     }
-  }, [session])
+  }, [session, backgroundSync, prefetch, currentSection])
 
-  const loadEmails = async (showRefreshIndicator = false, isIncremental = false, category?: string) => {
-    if (showRefreshIndicator) {
-      setIsRefreshing(true)
-    } else {
-      setIsLoading(true)
-    }
-
-    try {
-      console.log('Fetching emails from Gmail API...')
-      
-      // Build URL with category and incremental fetching parameters
-      const targetCategory = category || currentSection
-      let url = `/api/emails?category=${targetCategory}`
-      if (isIncremental) {
-        const lastFetch = loadFromCache(CACHE_KEYS.LAST_EMAIL_FETCH)
-        if (lastFetch) {
-          url += `&since=${encodeURIComponent(lastFetch)}&maxResults=20`
-        }
-      }
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-      })
-
-      console.log('Response status:', response.status)
-
-      if (!response.ok) {
-        let errorData
-        try {
-          errorData = await response.json()
-        } catch {
-          errorData = { error: await response.text() }
-        }
-        console.error('Failed to fetch emails:', response.statusText, errorData)
-        
-        if (response.status === 401) {
-          if (errorData.requiresReauth) {
-            toast({
-              title: 'Authentication Expired',
-              description: errorData.message || 'Please sign out and sign in again to refresh your Gmail access.',
-              variant: 'destructive',
-              action: (
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => signOut({ callbackUrl: '/' })}
-                >
-                  Sign Out
-                </Button>
-              ),
-            })
-            return
-          }
-        }
-        
-        throw new Error(errorData.error || 'Failed to fetch emails')
-      }
-
-      const data = await response.json()
-      console.log('Emails data:', data)
-      
-      let newEmails: Email[] = []
-      if (Array.isArray(data)) {
-        newEmails = data
-      } else if (data.emails && Array.isArray(data.emails)) {
-        newEmails = data.emails
-      } else {
-        console.warn('No emails array in response:', data)
-        newEmails = []
-      }
-      
-      if (isIncremental && newEmails.length > 0) {
-        // Merge new emails with existing ones, avoiding duplicates
-        setEmails(prevEmails => {
-          const existingIds = new Set(prevEmails.map(email => email.id))
-          const uniqueNewEmails = newEmails.filter(email => !existingIds.has(email.id))
-          const mergedEmails = [...uniqueNewEmails, ...prevEmails]
-          
-          // Cache the merged emails
-          saveToCache(CACHE_KEYS.EMAILS, mergedEmails)
-          return mergedEmails
-        })
-        console.log(`Loaded ${newEmails.length} new emails incrementally`)
-      } else {
-        // Full refresh
-        setEmails(newEmails)
-        saveToCache(CACHE_KEYS.EMAILS, newEmails)
-        console.log(`Loaded ${newEmails.length} emails`)
-      }
-      
-      // Generate summaries for emails without them (in background)
-      generateMissingSummaries(newEmails)
-      
-      // Update last fetch timestamp
-      saveToCache(CACHE_KEYS.LAST_EMAIL_FETCH, new Date().toISOString())
-    } catch (error) {
-      console.error('Error loading emails:', error)
-      toast({
-        title: 'Error',
-        description: 'Failed to load emails. Please try again.',
-        variant: 'destructive',
-      })
-      setEmails([])
-    } finally {
-      setIsLoading(false)
-      setIsRefreshing(false)
-    }
-  }
+  // SWR handles email loading automatically
 
   const handleRefresh = () => {
-    loadEmails(true)
+    refresh(true) // Force refresh from Gmail with SWR
   }
 
   // Function to generate summaries for emails that don't have them
@@ -368,9 +299,10 @@ export function EmailDashboard() {
               const data = await response.json()
               
               // Update the email in the list to include the summary
-              setEmails(prev => prev.map(e => 
-                e.id === email.id ? { ...e, summary: data.summary } : e
-              ))
+              const updatedEmail = emails.find(e => e.id === email.id)
+              if (updatedEmail) {
+                emailStore.updateEmail(email.id, { ...updatedEmail, summary: data.summary })
+              }
               
               // Cache the summary
               const existingSummaries = loadFromCache(CACHE_KEYS.EMAIL_SUMMARIES) || {}
@@ -442,9 +374,10 @@ export function EmailDashboard() {
     setIsMobilePreviewOpen(true) // Open mobile preview when email is selected
     
     if (!email.isRead) {
-      setEmails(prev => prev.map(e => 
-        e.id === email.id ? { ...e, isRead: true } : e
-      ))
+      const updatedEmail = emails.find(e => e.id === email.id)
+      if (updatedEmail) {
+        emailStore.updateEmail(email.id, { ...updatedEmail, isRead: true })
+      }
     }
 
     // Use existing summary from email object if available
@@ -487,9 +420,10 @@ export function EmailDashboard() {
           saveToCache(CACHE_KEYS.EMAIL_SUMMARIES, existingSummaries)
           
           // Update the email in the list to include the summary
-          setEmails(prev => prev.map(e => 
-            e.id === email.id ? { ...e, summary: data.summary } : e
-          ))
+          const updatedEmail = emails.find(e => e.id === email.id)
+          if (updatedEmail) {
+            emailStore.updateEmail(email.id, { ...updatedEmail, summary: data.summary })
+          }
         } else if (response.status === 401) {
           console.warn('Authentication required for AI summary. Please check your login status.')
           // Don't show error to user, just skip AI summary
@@ -510,9 +444,10 @@ export function EmailDashboard() {
   }
 
   const toggleStar = (emailId: string) => {
-    setEmails(prev => prev.map(email => 
-      email.id === emailId ? { ...email, isStarred: !email.isStarred } : email
-    ))
+    const updatedEmail = emails.find(e => e.id === emailId)
+    if (updatedEmail) {
+      emailStore.updateEmail(emailId, { ...updatedEmail, isStarred: !updatedEmail.isStarred })
+    }
   }
 
   const validateEmail = (email: string) => {
@@ -870,8 +805,8 @@ export function EmailDashboard() {
                           setCurrentSection(item.id)
                           setSelectedEmail(null)
                           setIsSidebarOpen(false)
-                          // Load emails for the new category
-                          loadEmails(false, false, item.id)
+                          // Refresh emails for the new category
+                          refresh(true)
                         }}
                       >
                         <Icon className="mr-2 h-4 w-4 flex-shrink-0" />
@@ -997,14 +932,18 @@ export function EmailDashboard() {
                 </div>
                 <div className="flex-1 overflow-y-auto">
                   {isLoading ? (
-                    <div className="p-4">
-                      {[...Array(5)].map((_, i) => (
-                        <div key={i} className="mb-4 p-4 border rounded-lg animate-pulse">
-                          <div className="h-4 bg-muted rounded mb-2"></div>
-                          <div className="h-3 bg-muted rounded mb-1"></div>
-                          <div className="h-3 bg-muted rounded w-2/3"></div>
-                        </div>
-                      ))}
+                    <EmailListSkeleton />
+                  ) : error ? (
+                    <div className="p-8 text-center">
+                      <Mail className="mx-auto h-12 w-12 text-red-500 mb-4" />
+                      <h3 className="text-lg font-medium mb-2">Failed to load emails</h3>
+                      <p className="text-muted-foreground mb-4">
+                        {error.message || 'Something went wrong. Please try again.'}
+                      </p>
+                      <Button onClick={() => refresh(true)} variant="outline">
+                        <RefreshCw className="mr-2 h-4 w-4" />
+                        Retry
+                      </Button>
                     </div>
                   ) : filteredEmails.length === 0 ? (
                     <div className="p-8 text-center">
@@ -1019,74 +958,114 @@ export function EmailDashboard() {
                       </Button>
                     </div>
                   ) : (
-                    filteredEmails.map((email) => (
-                      <motion.div
-                        key={email.id}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className={cn(
-                          'p-3 border-b border-border cursor-pointer hover:bg-accent transition-colors',
-                          selectedEmail?.id === email.id && 'bg-accent',
-                          !email.isRead && 'bg-blue-50/50 dark:bg-blue-900/10'
-                        )}
-                        onClick={() => handleEmailSelect(email)}
-                      >
-                        <div className="flex items-start justify-between mb-1.5">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center space-x-1.5">
+                    <>
+                      {filteredEmails.map((email) => (
+                        <motion.div
+                          key={email.id}
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className={cn(
+                            'p-3 border-b border-border cursor-pointer hover:bg-accent transition-colors',
+                            selectedEmail?.id === email.id && 'bg-accent',
+                            !email.isRead && 'bg-blue-50/50 dark:bg-blue-900/10'
+                          )}
+                          onClick={() => handleEmailSelect(email)}
+                        >
+                          <div className="flex items-start justify-between mb-1.5">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center space-x-1.5">
+                                <p className={cn(
+                                  'text-xs font-medium truncate',
+                                  !email.isRead && 'font-semibold'
+                                )}>
+                                  {email.from.split('<')[0].trim() || email.from}
+                                </p>
+                                {email.isImportant && (
+                                  <Sparkles className="h-2.5 w-2.5 text-yellow-500 flex-shrink-0" />
+                                )}
+                                {email.summary ? (
+                                  <div className="flex items-center space-x-1">
+                                    <Bot className="h-2.5 w-2.5 text-blue-500 flex-shrink-0" />
+                                    <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">AI</span>
+                                  </div>
+                                ) : generatingSummaries.has(email.id) ? (
+                                  <div className="flex items-center space-x-1">
+                                    <div className="h-2.5 w-2.5 rounded-full bg-gray-300 dark:bg-gray-600 animate-pulse flex-shrink-0" />
+                                    <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">Generating...</span>
+                                  </div>
+                                ) : null}
+                              </div>
                               <p className={cn(
-                                'text-xs font-medium truncate',
-                                !email.isRead && 'font-semibold'
+                                'text-xs truncate mt-0.5',
+                                !email.isRead ? 'font-semibold' : 'text-muted-foreground'
                               )}>
-                                {email.from.split('<')[0].trim() || email.from}
+                                {email.subject}
                               </p>
-                              {email.isImportant && (
-                                <Sparkles className="h-2.5 w-2.5 text-yellow-500 flex-shrink-0" />
-                              )}
-                              {email.summary ? (
-                                <div className="flex items-center space-x-1">
-                                  <Bot className="h-2.5 w-2.5 text-blue-500 flex-shrink-0" />
-                                  <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">AI</span>
-                                </div>
-                              ) : generatingSummaries.has(email.id) ? (
-                                <div className="flex items-center space-x-1">
-                                  <div className="h-2.5 w-2.5 rounded-full bg-gray-300 dark:bg-gray-600 animate-pulse flex-shrink-0" />
-                                  <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">Generating...</span>
-                                </div>
-                              ) : null}
                             </div>
-                            <p className={cn(
-                              'text-xs truncate mt-0.5',
-                              !email.isRead ? 'font-semibold' : 'text-muted-foreground'
-                            )}>
-                              {email.subject}
-                            </p>
+                            <div className="flex items-center space-x-1 ml-2 flex-shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  toggleStar(email.id)
+                                }}
+                                className="h-5 w-5 p-0"
+                              >
+                                <Star className={cn(
+                                  'h-2.5 w-2.5',
+                                  email.isStarred ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'
+                                )} />
+                              </Button>
+                              <span className="text-xs text-muted-foreground">
+                                {new Date(email.receivedAt).toLocaleDateString() === new Date().toLocaleDateString() 
+                                  ? new Date(email.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  : new Date(email.receivedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                                }
+                              </span>
+                            </div>
                           </div>
-                          <div className="flex items-center space-x-1 ml-2 flex-shrink-0">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                toggleStar(email.id)
-                              }}
-                              className="h-5 w-5 p-0"
-                            >
-                              <Star className={cn(
-                                'h-2.5 w-2.5',
-                                email.isStarred ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'
-                              )} />
-                            </Button>
-                            <span className="text-xs text-muted-foreground">
-                              {new Date(email.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </div>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {email.snippet}
+                          </p>
+                        </motion.div>
+                      ))}
+                      
+                      {/* Load More Button */}
+                      {hasMore && nextOlderThan && (
+                        <div className="p-4 border-t border-border">
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            onClick={async () => {
+                              try {
+                                await loadOlderEmails(nextOlderThan)
+                                toast({
+                                  title: "Older emails loaded",
+                                  description: "Successfully loaded more emails",
+                                  duration: 2000
+                                })
+                              } catch (error) {
+                                toast({
+                                  title: "Failed to load older emails",
+                                  description: "Please try again",
+                                  variant: "destructive",
+                                  duration: 3000
+                                })
+                              }
+                            }}
+                            disabled={isLoading}
+                          >
+                            {isLoading ? (
+                              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4 mr-2" />
+                            )}
+                            Load older emails (30 days)
+                          </Button>
                         </div>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {email.snippet}
-                        </p>
-                      </motion.div>
-                    ))
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -1117,7 +1096,7 @@ export function EmailDashboard() {
                           <h1 className="text-lg md:text-xl font-semibold mb-2 break-words">{selectedEmail.subject}</h1>
                           <div className="flex flex-col sm:flex-row sm:items-center sm:space-x-4 space-y-1 sm:space-y-0 text-sm text-muted-foreground">
                             <span className="break-words">From: {selectedEmail.from}</span>
-                            <span>{new Date(selectedEmail.date).toLocaleString()}</span>
+                            <span>{new Date(selectedEmail.receivedAt).toLocaleString()}</span>
                           </div>
                         </div>
                         <div className="flex items-center space-x-2 ml-2 flex-shrink-0">
@@ -1224,17 +1203,7 @@ export function EmailDashboard() {
                                     {emailSummary.summary}
                                   </p>
                                 </div>
-                                <div>
-                                  <h4 className="font-medium mb-2 text-foreground">Priority</h4>
-                                  <span className={cn(
-                                    'px-3 py-1 rounded-full text-xs font-medium inline-block',
-                                    emailSummary.priority === 'High' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400' :
-                                    emailSummary.priority === 'Medium' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400' :
-                                    'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                                  )}>
-                                    {emailSummary.priority}
-                                  </span>
-                                </div>
+
                                 <div>
                                   <h4 className="font-medium mb-2 text-foreground">Key Points</h4>
                                   <ul className="text-sm text-muted-foreground space-y-2">
