@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -44,10 +44,14 @@ import { cn } from '@/lib/utils'
 import { useToast } from '@/components/ui/use-toast'
 import { AIAssistant } from '@/components/ai-assistant'
 import { ContactsTab } from '@/components/contacts-tab'
+import { SlackTab } from '@/components/slack-tab'
+import { AccountSwitcher } from '@/components/account-switcher'
 import { startEmailScheduler } from '@/lib/scheduler'
 import DOMPurify from 'dompurify'
 import { useEmailCache, useEmailPersistence, usePrefetchEmails } from '@/hooks/use-email-cache'
 import useEmailStore from '@/lib/email-store'
+import { usePusher } from '@/hooks/use-pusher'
+import { useEmailPolling } from '@/hooks/use-email-polling'
 import { 
   EmailListSkeleton, 
   EmailDetailSkeleton, 
@@ -57,6 +61,7 @@ import {
 import { PaneManager } from '@/components/pane-manager'
 import { EmailPane } from '@/components/email-pane'
 import { formatEmailDate } from '@/lib/date-utils'
+import { VirtualEmailList } from '@/components/virtual-email-list'
 
 // Cache configuration
 const CACHE_KEYS = {
@@ -192,17 +197,190 @@ export default function EmailDashboardWithPanes() {
   } = useEmailCache({ 
     category: currentSection, 
     revalidateOnFocus: false,
-    maxAgeMinutes: 5,
-    enablePrefetch: true
+    maxAgeMinutes: 10, // Increased from 5 to 10 minutes
+    enablePrefetch: false // Disabled to reduce requests
+  })
+  
+  // WebSocket for real-time updates
+  // Email store for direct updates
+  const { addEmails, updateEmail, removeEmail } = useEmailStore()
+  
+  // Function to fetch new emails by ID
+  const fetchNewEmailsById = useCallback(async (emailIds: string[]) => {
+    if (!emailIds || emailIds.length === 0) {
+      console.log('No email IDs provided to fetch')
+      return
+    }
+    
+    try {
+      console.log('Fetching new emails by ID:', emailIds)
+      const response = await fetch('/api/emails/by-ids', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ emailIds, category: currentSection })
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        console.log('API response for new emails:', data)
+        const fetched = Array.isArray(data) ? data : (data?.emails || [])
+        if (fetched && fetched.length > 0) {
+          console.log(`Adding ${fetched.length} new emails to store for section: ${currentSection}`)
+          addEmails(currentSection, fetched)
+          toast({
+            title: "New emails received",
+            description: `${fetched.length} new email(s) added instantly`,
+            duration: 3000
+          })
+        } else {
+          console.log('No emails returned from API or empty response')
+        }
+      } else {
+        console.error('Failed to fetch emails by ID:', response.status, response.statusText)
+        if (response.status === 401) {
+          console.log('Authentication issue, user may need to re-login')
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch new emails by ID:', error)
+      // Don't call refresh here to prevent infinite loops
+    }
+  }, [currentSection, addEmails, toast])
+  
+  // Function to add email directly to store
+  const addEmailToStore = useCallback((email: any) => {
+    console.log('🏪 addEmailToStore called:', {
+      email: email,
+      currentSection,
+      hasAddEmails: !!addEmails
+    })
+    
+    if (email && email.id) {
+      console.log('📥 Calling addEmails with:', { currentSection, emailCount: 1 })
+      addEmails(currentSection, [email])
+      
+      console.log('🎉 Showing toast notification')
+      toast({
+        title: "New email received",
+        description: `From: ${email.from}`,
+        duration: 3000
+      })
+    } else {
+      console.log('❌ addEmailToStore validation failed')
+    }
+  }, [currentSection, addEmails, toast])
+  
+  // Function to remove email from store
+  const removeEmailFromStore = useCallback((emailId: string) => {
+    if (emailId) {
+      removeEmail(emailId)
+      toast({
+        title: "Email deleted",
+        description: "Email removed from your inbox",
+        duration: 2000
+      })
+    }
+  }, [removeEmail, toast])
+
+  // Memoized WebSocket callbacks to prevent infinite re-renders
+  const handleEmailUpdate = useCallback((data: any) => {
+    console.log('Email update received:', data)
+    // Handle specific email updates without full refresh
+    if (data.action === 'added' && data.emailIds?.length > 0) {
+      console.log('Fetching new emails by IDs:', data.emailIds)
+      // Fetch only the new emails and add them to the store
+      fetchNewEmailsById(data.emailIds)
+    } else if (data.action === 'added' && data.count > 0) {
+      // If we don't have specific IDs but know emails were added, trigger a refresh
+      console.log('New emails detected without IDs, triggering refresh')
+      refresh(false) // Use cached data if available
+    }
+    // Removed refresh() call to prevent infinite loop
+  }, [fetchNewEmailsById, refresh])
+
+  const handleNewEmail = useCallback((email: any) => {
+    console.log('🎯 handleNewEmail called with:', email)
+    console.log('📊 Email validation:', {
+      hasEmail: !!email,
+      hasId: !!email?.id,
+      currentSection,
+      emailId: email?.id
+    })
+    
+    // If we have the full email object, add it directly to the store
+    if (email && email.id) {
+      console.log('✅ Adding email to store via addEmailToStore')
+      addEmailToStore(email)
+    } else {
+      console.log('❌ Email validation failed - not adding to store')
+    }
+    // Removed refresh() call to prevent infinite loop
+  }, [addEmailToStore, currentSection])
+
+  const handleEmailDeleted = useCallback((emailId: string) => {
+    console.log('Email deleted:', emailId)
+    // Remove email directly from store
+    if (emailId) {
+      removeEmailFromStore(emailId)
+    }
+  }, [removeEmailFromStore])
+
+  const handleSyncStatus = useCallback((status: any) => {
+    console.log('Sync status:', status)
+  }, [])
+
+  // WebSocket options - memoized to prevent constant re-initialization
+  const webSocketOptions = useMemo(() => ({
+    debug: true, // Enable debug logging
+    onEmailUpdate: handleEmailUpdate,
+    onNewEmail: handleNewEmail,
+    onEmailDeleted: handleEmailDeleted,
+    onSyncStatus: handleSyncStatus
+  }), [handleEmailUpdate, handleNewEmail, handleEmailDeleted, handleSyncStatus])
+
+  // Pusher for real-time updates
+  const { isConnected: wsConnected, reconnect, error: wsError } = usePusher(webSocketOptions)
+  
+  // Email polling fallback when WebSocket is not available
+  const isWebSocketUnavailable = wsError?.includes('WebSocket not available') || wsError?.includes('polling mode')
+  
+  useEmailPolling({
+    enabled: true, // Always enable polling for now to ensure new emails are detected
+    interval: 86400000, // 24 hours
+    onNewEmails: (newEmails) => {
+      console.log('Polling detected new emails:', newEmails)
+      console.log('Current section:', currentSection)
+      console.log('New emails count:', newEmails?.length || 0)
+      if (newEmails && newEmails.length > 0) {
+        console.log('Adding emails to store for section:', currentSection)
+        addEmails(currentSection, newEmails)
+        console.log('Emails added to store successfully')
+        toast({
+          title: "New emails received",
+          description: `${newEmails.length} new email(s) detected via polling`,
+          duration: 3000
+        })
+      } else {
+        console.log('No new emails to add or newEmails is empty/null')
+      }
+    },
+    onError: (error) => {
+      console.error('Email polling error:', error)
+    },
+    debug: true
   })
   
   // Older emails range tracking
   const [olderEmailsRange, setOlderEmailsRange] = useState(60) // Start with 60-90 days
   
-  // Debug logging
-  console.log(`Dashboard Debug - hasMore: ${hasMore}, nextOlderThan: ${nextOlderThan}, emailsCount: ${emails.length}, section: ${currentSection}`)
+  // Debug logging (only log when values change)
+  useEffect(() => {
+    console.log(`Dashboard Debug - hasMore: ${hasMore}, nextOlderThan: ${nextOlderThan}, emailsCount: ${emails.length}, section: ${currentSection}`)
+  }, [hasMore, nextOlderThan, emails.length, currentSection])
   useEmailPersistence()
-  usePrefetchEmails()
+  // Removed usePrefetchEmails() to reduce API requests
   
   // Add state for active pane
   const [activePaneId, setActivePaneId] = useState<string>('main')
@@ -221,6 +399,124 @@ export default function EmailDashboardWithPanes() {
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  // Gmail watch enabled - real-time push notifications from Gmail
+  // Requires Google Cloud Pub/Sub configuration with MyTopic and MySub
+  useEffect(() => {
+    // Gmail watch setup for real-time email notifications
+    const setupGmailWatch = async () => {
+      if (!session?.user?.email) return
+      try {
+        console.log('Setting up Gmail watch for real-time notifications')
+        
+        // Get CSRF token first
+        const csrfResponse = await fetch('/api/csrf-token')
+        if (!csrfResponse.ok) {
+          throw new Error('Failed to get CSRF token')
+        }
+        const { csrfToken } = await csrfResponse.json()
+        
+        // Make the watch setup request with CSRF token
+        const response = await fetch('/api/gmail/watch', { 
+          method: 'POST',
+          headers: {
+            'x-csrf-token': csrfToken
+          }
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          console.log('Gmail watch setup successfully:', data)
+          toast({
+            title: 'Gmail Watch Active',
+            description: 'Real-time email notifications enabled',
+            duration: 3000
+          })
+        } else {
+          const error = await response.json()
+          console.warn('Failed to setup Gmail watch:', error)
+          toast({
+            title: 'Gmail Watch Setup Failed',
+            description: error.error || 'Failed to enable real-time notifications',
+            variant: 'destructive'
+          })
+        }
+      } catch (error) {
+        console.warn('Failed to setup Gmail watch:', error)
+        toast({
+          title: 'Gmail Watch Error',
+          description: 'Failed to enable real-time notifications',
+          variant: 'destructive'
+        })
+      }
+    }
+    
+    const timer = setTimeout(setupGmailWatch, 1000)
+    return () => clearTimeout(timer)
+  }, [session?.user?.email, toast])
+
+  // Real-time updates are now handled by the WebSocket hook above
+  // The useWebSocket hook automatically handles Gmail push notifications,
+  // email updates, and sync status changes
+  
+  // Listen for custom events dispatched by the WebSocket hook
+  useEffect(() => {
+    const handleEmailListRefresh = (event: CustomEvent) => {
+      const { category, action } = event.detail
+      console.log(`[Email List Refresh] Category: ${category}, Action: ${action}, Current: ${currentSection}`)
+      
+      // Only refresh if the event is for the current section
+      if (category === currentSection || category === 'inbox') {
+        console.log(`[Email List Refresh] Refreshing ${currentSection} due to ${action} in ${category}`)
+        refresh(false) // Use cached data if available
+      }
+    }
+
+    const handleNewEmailReceived = (event: CustomEvent) => {
+      const newEmail = event.detail
+      console.log('[New Email Received]', newEmail)
+      
+      if (newEmail && newEmail.id) {
+        // Add to the appropriate section if it belongs there
+        const emailLabels = newEmail.labelIds || newEmail.labels || []
+        let shouldAddToCurrentSection = false
+        
+        switch (currentSection) {
+          case 'inbox':
+            shouldAddToCurrentSection = !emailLabels.includes('SENT') && !emailLabels.includes('DRAFT') && !emailLabels.includes('TRASH')
+            break
+          case 'starred':
+            shouldAddToCurrentSection = newEmail.isStarred
+            break
+          case 'important':
+            shouldAddToCurrentSection = newEmail.isImportant
+            break
+          case 'unread':
+            shouldAddToCurrentSection = !newEmail.isRead
+            break
+          default:
+            shouldAddToCurrentSection = false
+        }
+        
+        if (shouldAddToCurrentSection) {
+          addEmails(currentSection, [newEmail])
+          toast({
+            title: "New email received",
+            description: `From: ${newEmail.from}`,
+            duration: 3000
+          })
+        }
+      }
+    }
+
+    window.addEventListener('email-list-refresh', handleEmailListRefresh as EventListener)
+    window.addEventListener('new-email-received', handleNewEmailReceived as EventListener)
+    
+    return () => {
+      window.removeEventListener('email-list-refresh', handleEmailListRefresh as EventListener)
+      window.removeEventListener('new-email-received', handleNewEmailReceived as EventListener)
+    }
+  }, [currentSection, refresh, addEmails, toast])
   
   // Filter emails based on current section and search
    const filteredEmails = emails.filter(email => {
@@ -233,7 +529,7 @@ export default function EmailDashboardWithPanes() {
       
       switch (currentSection) {
         case 'inbox':
-          return matchesSearch && !emailLabels.includes('SENT') && !emailLabels.includes('DRAFT')
+          return matchesSearch && !emailLabels.includes('SENT') && !emailLabels.includes('DRAFT') && !emailLabels.includes('TRASH')
         case 'starred':
           return matchesSearch && email.isStarred
         case 'sent':
@@ -242,6 +538,20 @@ export default function EmailDashboardWithPanes() {
           return matchesSearch && emailLabels.includes('DRAFT')
         case 'important':
           return matchesSearch && email.isImportant
+        case 'promotions':
+          return matchesSearch && (emailLabels.includes('CATEGORY_PROMOTIONS') || emailLabels.includes('PROMOTIONS'))
+        case 'social':
+          return matchesSearch && (emailLabels.includes('CATEGORY_SOCIAL') || emailLabels.includes('SOCIAL'))
+        case 'trash':
+          return matchesSearch && emailLabels.includes('TRASH')
+        case 'archive':
+          return matchesSearch && emailLabels.includes('ARCHIVE')
+        case 'calendar':
+          // For calendar, we'll show a placeholder for now - this would need calendar integration
+          return false
+        case 'slack':
+          // For slack, we'll handle this in the SlackTab component
+          return false
         default:
           return matchesSearch
       }
@@ -256,12 +566,7 @@ export default function EmailDashboardWithPanes() {
   }
   
   // Note: Email scheduler is auto-started in production via scheduler.ts
-  // In development, we start it once when user is authenticated
-  useEffect(() => {
-    if (session?.user?.email && process.env.NODE_ENV === 'development') {
-      startEmailScheduler()
-    }
-  }, [session])
+  // Scheduler is automatically started in lib/scheduler.ts
   
   const handleEmailSelect = useCallback(async (email: Email, paneId?: string) => {
     try {
@@ -288,7 +593,13 @@ export default function EmailDashboardWithPanes() {
         // Fetch full email content
         const response = await fetch(`/api/emails/${email.id}`)
         if (!response.ok) {
-          throw new Error('Failed to fetch email')
+          if (response.status === 401) {
+            throw new Error('Authentication expired. Please sign in again.')
+          } else if (response.status === 404) {
+            throw new Error('Email not found')
+          } else {
+            throw new Error(`Failed to fetch email (${response.status})`)
+          }
         }
         
         const fullEmail: FullEmail = await response.json()
@@ -306,11 +617,27 @@ export default function EmailDashboardWithPanes() {
       if (paneUpdateRef.current) {
         paneUpdateRef.current(paneId || 'main', { isLoading: false })
       }
-      toast({
-        title: 'Error',
-        description: 'Failed to load email content',
-        variant: 'destructive'
-      })
+      
+      const errorMessage = error instanceof Error ? error.message : 'Failed to load email content'
+      
+      // Check if it's an authentication error
+       if (errorMessage.includes('Authentication expired') || errorMessage.includes('sign in again')) {
+         toast({
+           title: 'Authentication Required',
+           description: 'Your session has expired. Please refresh the page to continue.',
+           variant: 'destructive'
+         })
+         // Auto-refresh after a delay
+         setTimeout(() => {
+           window.location.reload()
+         }, 3000)
+      } else {
+        toast({
+          title: 'Error',
+          description: errorMessage,
+          variant: 'destructive'
+        })
+      }
       return null
     }
   }, [emailStore, toast])
@@ -535,6 +862,53 @@ export default function EmailDashboardWithPanes() {
                   <X className="h-4 w-4" />
                 </Button>
               </div>
+              {/* Test Button */}
+              <Button 
+                onClick={async () => {
+                  try {
+                    console.log('[Test] Triggering Gmail push notification test')
+                    
+                    // Get CSRF token first
+                    const csrfResponse = await fetch('/api/csrf-token')
+                    const csrfData = await csrfResponse.json()
+                    
+                    if (!csrfData.csrfToken) {
+                      throw new Error('Failed to get CSRF token')
+                    }
+                    
+                    const response = await fetch('/api/test-gmail-push', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'x-csrf-token': csrfData.csrfToken
+                      },
+                      body: JSON.stringify({
+                        messageIds: [`test-msg-${Date.now()}`],
+                        count: 1
+                      })
+                    })
+                    
+                    const result = await response.json()
+                    console.log('[Test] Gmail push test result:', result)
+                    toast({
+                      title: 'Test Triggered',
+                      description: 'Gmail push notification test sent'
+                    })
+                  } catch (error) {
+                    console.error('[Test] Gmail push test failed:', error)
+                    toast({
+                      title: 'Test Failed',
+                      description: 'Failed to trigger test',
+                      variant: 'destructive'
+                    })
+                  }
+                }}
+                size="sm"
+                variant="outline"
+                className="mt-2 w-full text-xs"
+              >
+                Test Gmail Push
+              </Button>
             </div>
             
             {/* Navigation */}
@@ -544,7 +918,13 @@ export default function EmailDashboardWithPanes() {
                 { id: 'starred', label: 'Starred', icon: Star, count: emailStats.starred },
                 { id: 'sent', label: 'Sent', icon: Send },
                 { id: 'drafts', label: 'Drafts', icon: Archive },
-                { id: 'important', label: 'Important', icon: Tag, count: emailStats.important }
+                { id: 'important', label: 'Important', icon: Tag, count: emailStats.important },
+                { id: 'promotions', label: 'Promotions', icon: Sparkles, count: 0 },
+                { id: 'social', label: 'Social', icon: Users, count: 0 },
+                { id: 'trash', label: 'Trash', icon: Trash2, count: 0 },
+                { id: 'archive', label: 'Archive', icon: Archive, count: 0 },
+                { id: 'calendar', label: 'Calendar', icon: Calendar, count: 0 },
+                { id: 'slack', label: 'Slack', icon: MessageCircle, count: 0 }
               ].map((item) => (
                 <Button
                   key={item.id}
@@ -581,14 +961,7 @@ export default function EmailDashboardWithPanes() {
                 <Bot className="mr-2 h-4 w-4" />
                 AI Assistant
               </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start"
-                onClick={() => signOut()}
-              >
-                <LogOut className="mr-2 h-4 w-4" />
-                Sign Out
-              </Button>
+              <AccountSwitcher />
             </div>
           </motion.aside>
         )}
@@ -620,10 +993,40 @@ export default function EmailDashboardWithPanes() {
           </div>
           
           <div className="flex items-center space-x-2">
+            {/* WebSocket Connection Status */}
+            <div className="flex items-center space-x-1 text-xs text-muted-foreground">
+              <div className={cn(
+                "w-2 h-2 rounded-full",
+                wsConnected ? "bg-green-500" : "bg-red-500"
+              )} />
+              <span className="hidden sm:inline">
+                {wsConnected ? 'Live' : 'Offline'}
+              </span>
+              {!wsConnected && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={reconnect}
+                  className="h-6 px-2 text-xs"
+                >
+                  Reconnect
+                </Button>
+              )}
+            </div>
+            
             <Button
               variant="outline"
               size="sm"
-              onClick={() => refresh(true)}
+              onClick={async () => {
+                console.log('[Manual Refresh] User clicked refresh button')
+                await refresh(true)
+                console.log('[Manual Refresh] Refresh completed')
+                toast({
+                  title: 'Emails Refreshed',
+                  description: 'Email list has been updated with latest data',
+                  duration: 2000
+                })
+              }}
               disabled={isLoading}
             >
               <RefreshCw className={cn("h-4 w-4 mr-2", isLoading && "animate-spin")} />
@@ -642,7 +1045,9 @@ export default function EmailDashboardWithPanes() {
         
         {/* Content Area */}
         <div className="flex-1 flex min-h-0">
-          {isDesktop ? (
+          {currentSection === 'slack' ? (
+            <SlackTab />
+          ) : isDesktop ? (
             <div className="flex-1 flex min-h-0">
               {/* Email List Panel */}
               <div className="w-80 border-r border-border flex flex-col flex-shrink-0 min-h-0">
@@ -674,60 +1079,31 @@ export default function EmailDashboardWithPanes() {
                       </p>
                     </div>
                   ) : (
-                    <div className="space-y-1 p-2">
-                      {filteredEmails.map((email) => (
-                        <motion.div
-                          key={email.id}
-                          draggable
-                          onDragStart={(e) => {
-                            const dragEvent = e as unknown as DragEvent
-                            dragEvent.dataTransfer?.setData('text/plain', JSON.stringify(email))
-                            // Use PaneManager's drag handlers if available
-                            if (dragHandlersRef.current) {
-                              dragHandlersRef.current.onDragStart(email)
-                            }
-                          }}
-                          onDragEnd={() => {
-                            // Use PaneManager's drag handlers if available
-                            if (dragHandlersRef.current) {
-                              dragHandlersRef.current.onDragEnd()
-                            }
-                          }}
-                          className={cn(
-                            "p-3 rounded-lg border cursor-pointer transition-all duration-200 hover:bg-accent",
-                            selectedEmail?.id === email.id && "bg-accent border-primary",
-                            !email.isRead && "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800"
-                          )}
-                          onClick={() => loadEmailIntoPane(email)}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          <div className="flex items-start justify-between mb-1">
-                            <span className={cn(
-                              "text-sm truncate flex-1 mr-2",
-                              !email.isRead && "font-semibold"
-                            )}>
-                              {email.from}
-                            </span>
-                            <div className="flex items-center space-x-1 flex-shrink-0">
-                              {email.isStarred && <Star className="h-3 w-3 text-yellow-500 fill-current" />}
-                              {email.isImportant && <Tag className="h-3 w-3 text-red-500" />}
-                              <span className="text-xs text-muted-foreground">
-                                {formatEmailDate(email.receivedAt)}
-                              </span>
-                            </div>
-                          </div>
-                          <h4 className={cn(
-                            "text-sm mb-1 truncate",
-                            !email.isRead && "font-semibold"
-                          )}>
-                            {email.subject || '(No Subject)'}
-                          </h4>
-                          <p className="text-xs text-muted-foreground truncate">
-                            {email.snippet}
-                          </p>
-                        </motion.div>
-                      ))}
+                    <div className="h-full">
+                      <VirtualEmailList
+                        emails={filteredEmails.map(email => ({
+                          id: email.id,
+                          subject: email.subject,
+                          from: email.from,
+                          snippet: email.snippet,
+                          date: email.receivedAt,
+                          isRead: email.isRead,
+                          isStarred: email.isStarred,
+                          isImportant: email.isImportant,
+                          hasAttachments: false, // Add attachment detection logic if needed
+                          summary: email.summary ? {
+                            summary: email.summary.summary,
+                            keyPoints: email.summary.keyPoints
+                          } : undefined
+                        }))}
+                        onEmailSelect={(email) => {
+                          const originalEmail = filteredEmails.find(e => e.id === email.id)
+                          if (originalEmail) {
+                            loadEmailIntoPane(originalEmail)
+                          }
+                        }}
+                        selectedEmailId={selectedEmail?.id}
+                      />
                       
                       {/* Load More Button */}
                       {hasMore && (
@@ -936,59 +1312,31 @@ export default function EmailDashboardWithPanes() {
                         </p>
                       </div>
                     ) : (
-                      <div className="space-y-1 p-2">
-                        {filteredEmails.map((email) => (
-                          <motion.div
-                            key={email.id}
-                            draggable
-                            onDragStart={(e) => {
-                              const dragEvent = e as unknown as DragEvent
-                              dragEvent.dataTransfer?.setData('text/plain', JSON.stringify(email))
-                              // Use PaneManager's drag handlers if available
-                              if (dragHandlersRef.current) {
-                                dragHandlersRef.current.onDragStart(email)
-                              }
-                            }}
-                            onDragEnd={() => {
-                              // Use PaneManager's drag handlers if available
-                              if (dragHandlersRef.current) {
-                                dragHandlersRef.current.onDragEnd()
-                              }
-                            }}
-                            className={cn(
-                              "p-3 rounded-lg border cursor-pointer transition-all duration-200 hover:bg-accent",
-                              !email.isRead && "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800"
-                            )}
-                            onClick={() => loadEmailIntoPane(email)}
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                          >
-                            <div className="flex items-start justify-between mb-1">
-                              <span className={cn(
-                                "text-sm truncate flex-1 mr-2",
-                                !email.isRead && "font-semibold"
-                              )}>
-                                {email.from}
-                              </span>
-                              <div className="flex items-center space-x-1 flex-shrink-0">
-                                {email.isStarred && <Star className="h-3 w-3 text-yellow-500 fill-current" />}
-                                {email.isImportant && <Tag className="h-3 w-3 text-red-500" />}
-                                <span className="text-xs text-muted-foreground">
-                                    {formatEmailDate(email.receivedAt)}
-                                </span>
-                              </div>
-                            </div>
-                            <h4 className={cn(
-                              "text-sm mb-1 truncate",
-                              !email.isRead && "font-semibold"
-                            )}>
-                              {email.subject || '(No Subject)'}
-                            </h4>
-                            <p className="text-xs text-muted-foreground truncate">
-                              {email.snippet}
-                            </p>
-                          </motion.div>
-                        ))}
+                      <div className="h-full">
+                        <VirtualEmailList
+                          emails={filteredEmails.map(email => ({
+                            id: email.id,
+                            subject: email.subject,
+                            from: email.from,
+                            snippet: email.snippet,
+                            date: email.receivedAt,
+                            isRead: email.isRead,
+                            isStarred: email.isStarred,
+                            isImportant: email.isImportant,
+                            hasAttachments: false, // Add attachment detection logic if needed
+                            summary: email.summary ? {
+                              summary: email.summary.summary,
+                              keyPoints: email.summary.keyPoints
+                            } : undefined
+                          }))}
+                          onEmailSelect={(selectedEmailItem) => {
+                            const originalEmail = filteredEmails.find(e => e.id === selectedEmailItem.id)
+                            if (originalEmail) {
+                              loadEmailIntoPane(originalEmail)
+                            }
+                          }}
+                          selectedEmailId={undefined}
+                        />
                         
                         {/* Load More Button */}
                         {hasMore && (

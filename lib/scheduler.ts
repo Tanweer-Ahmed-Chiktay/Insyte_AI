@@ -2,7 +2,7 @@
 let schedulerInterval: NodeJS.Timeout | null = null
 let isSchedulerStarted = false
 
-const SCHEDULER_INTERVAL = 5 * 60 * 1000 // Check every 5 minutes (reduced frequency)
+const SCHEDULER_INTERVAL = 24 * 60 * 60 * 1000 // Check every 24 hours
 const MAX_RETRIES = 3
 let consecutiveErrors = 0
 
