@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { createCSRFHeaders } from '@/lib/utils/csrf-client'
 
 interface UseVoiceAssistantProps {
   onTranscript: (text: string) => void
@@ -313,7 +314,7 @@ export function useVoiceAssistant({
       onError('Failed to initialize speech recognition')
       return false
     }
-  }, [onTranscript, onError, voiceState.isSpeaking])
+  }, [onTranscript, onError])
 
   // Enhanced audio transcription with better retry logic
   const transcribeAudio = useCallback(async (audioBlob: Blob, retryCount = 0) => {
@@ -323,8 +324,13 @@ export function useVoiceAssistant({
       formData.append('audio', audioBlob, 'recording.webm')
       
       console.log(`Transcription attempt ${retryCount + 1}`)
+      const headers = await createCSRFHeaders()
+      // Remove Content-Type for FormData to let browser set it with boundary
+      delete headers['Content-Type']
+      
       const response = await fetch('/api/transcribe', {
         method: 'POST',
+        headers,
         body: formData,
         signal: AbortSignal.timeout(30000) // 30 second timeout
       })
@@ -470,7 +476,7 @@ export function useVoiceAssistant({
     }
     
     updateLevel()
-  }, [voiceState.isListening, detectVoiceActivity])
+  }, [voiceState, detectVoiceActivity])
 
   // Enhanced start listening with better state management
   const startListening = useCallback(async () => {
@@ -603,32 +609,40 @@ export function useVoiceAssistant({
 
   // Enhanced play audio with better state management and interruption handling
   const playAudio = useCallback(async (audioUrl: string) => {
+    console.log('🔊 playAudio called with URL:', audioUrl)
     try {
       // Stop any current audio
       if (currentAudioRef.current) {
+        console.log('🔊 Stopping current audio')
         currentAudioRef.current.pause()
         currentAudioRef.current = null
       }
       
       // Stop listening while speaking
       if (voiceState.isListening) {
+        console.log('🔊 Stopping listening while speaking')
         stopListening()
       }
       
+      console.log('🔊 Setting voice state to speaking')
       setVoiceState(prev => ({ ...prev, isSpeaking: true }))
       
       // Enhanced audio URL handling
       let audioSrc = audioUrl
+      console.log('🔊 Processing audio URL, starts with data:', audioUrl.startsWith('data:audio/'))
       if (audioUrl.startsWith('data:audio/')) {
         try {
+          console.log('🔊 Converting data URL to blob')
           const response = await fetch(audioUrl)
           const blob = await response.blob()
           audioSrc = URL.createObjectURL(blob)
+          console.log('🔊 Created blob URL:', audioSrc)
         } catch (error) {
-          console.warn('Failed to convert audio data URL:', error)
+          console.warn('🔊 Failed to convert audio data URL:', error)
         }
       }
       
+      console.log('🔊 Creating Audio element with src:', audioSrc)
       const audio = new Audio(audioSrc)
       audio.preload = 'auto'
       currentAudioRef.current = audio
@@ -658,10 +672,12 @@ export function useVoiceAssistant({
       }
       
       audio.oncanplaythrough = () => {
+        console.log('🔊 Audio can play through, starting level simulation')
         simulateAudioLevels()
       }
       
       audio.onended = () => {
+        console.log('🔊 Audio playback ended')
         clearInterval(speakingInterval)
         setVoiceState(prev => ({ ...prev, isSpeaking: false, audioLevel: 0 }))
         currentAudioRef.current = null
@@ -672,6 +688,7 @@ export function useVoiceAssistant({
         
         // Auto-restart listening in continuous mode
         if (continuousListeningRef.current) {
+          console.log('🔊 Auto-restarting listening in continuous mode')
           setTimeout(() => {
             if (continuousListeningRef.current) {
               startListening()
@@ -681,7 +698,7 @@ export function useVoiceAssistant({
       }
       
       audio.onerror = (error) => {
-        console.error('Audio playback error:', error)
+        console.error('🔊 Audio playback error:', error)
         clearInterval(speakingInterval)
         setVoiceState(prev => ({ ...prev, isSpeaking: false, audioLevel: 0 }))
         currentAudioRef.current = null
@@ -693,10 +710,12 @@ export function useVoiceAssistant({
         onError('Audio playback failed')
       }
       
+      console.log('🔊 Starting audio playback')
       await audio.play()
+      console.log('🔊 Audio play() completed successfully')
       
     } catch (error) {
-      console.error('Audio playback error:', error)
+      console.error('🔊 Audio playback error in catch block:', error)
       setVoiceState(prev => ({ ...prev, isSpeaking: false, audioLevel: 0 }))
       onError('Audio playback failed')
     }

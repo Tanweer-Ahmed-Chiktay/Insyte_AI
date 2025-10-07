@@ -166,10 +166,31 @@ export async function POST(request: NextRequest) {
         // Store sent email in database with proper labels
         if (result.data?.id) {
           try {
+            // Ensure Gmail email provider exists for this user
+            const emailProvider = await prisma.emailProvider.upsert({
+              where: {
+                userId_provider_email: {
+                  userId: scheduledEmail.userId,
+                  provider: 'gmail',
+                  email: scheduledEmail.user.email!
+                }
+              },
+              update: {
+                isActive: true
+              },
+              create: {
+                userId: scheduledEmail.userId,
+                provider: 'gmail',
+                email: scheduledEmail.user.email!,
+                isActive: true
+              }
+            })
+
             await prisma.email.create({
               data: {
-                gmailId: result.data.id,
-                userId: scheduledEmail.userId,
+                externalId: result.data.id,
+                user: { connect: { id: scheduledEmail.userId } },
+                provider: { connect: { id: emailProvider.id } },
                 threadId: result.data.threadId || '',
                 subject: scheduledEmail.subject,
                 from: scheduledEmail.user.email!,

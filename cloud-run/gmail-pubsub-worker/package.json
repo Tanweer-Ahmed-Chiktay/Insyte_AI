@@ -1,0 +1,36 @@
+{
+  "name": "gmail-pubsub-worker",
+  "version": "1.0.0",
+  "description": "Cloud Run worker for processing Gmail Pub/Sub notifications",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^4.0.7",
+    "@prisma/client": "^6.13.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.18.2",
+    "googleapis": "^128.0.0",
+    "prisma": "^6.13.0",
+    "pusher": "^5.2.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "gmail",
+    "pubsub",
+    "cloud-run",
+    "google-cloud",
+    "realtime"
+  ],
+  "author": "InSyte Team",
+  "license": "MIT"
+}

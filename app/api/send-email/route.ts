@@ -3,6 +3,12 @@ import { getToken } from 'next-auth/jwt'
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
 import { autoConvertMarkdown } from '@/lib/markdown-to-html'
+// Use the same WebSocket manager instance as the custom server (CommonJS module)
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - importing CJS module in TS file
+import wsModule from '@/lib/websocket/websocket-server.js'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const wsManager = (wsModule as any).wsManager
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
@@ -48,16 +54,58 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Subject or body too long' }, { status: 400 })
     }
 
-    // Collect attachments
+    // Collect and validate attachments
     const attachments: Array<{ filename: string; content: Buffer; mimeType: string }> = []
+    const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB per file
+    const MAX_TOTAL_SIZE = 25 * 1024 * 1024 // 25MB total
+    const ALLOWED_MIME_TYPES = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf', 'text/plain', 'text/csv',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    ]
+    
+    let totalSize = 0
+    
     for (let i = 0; i < attachmentCount; i++) {
       const file = formData.get(`attachment_${i}`) as File
       if (file) {
+        // Validate file size
+        if (file.size > MAX_FILE_SIZE) {
+          return NextResponse.json({ 
+            error: `File ${file.name} exceeds maximum size of 10MB` 
+          }, { status: 400 })
+        }
+        
+        totalSize += file.size
+        if (totalSize > MAX_TOTAL_SIZE) {
+          return NextResponse.json({ 
+            error: 'Total attachment size exceeds 25MB limit' 
+          }, { status: 400 })
+        }
+        
+        // Validate file type
+        const mimeType = file.type || 'application/octet-stream'
+        if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
+          return NextResponse.json({ 
+            error: `File type ${mimeType} is not allowed` 
+          }, { status: 400 })
+        }
+        
+        // Validate filename (prevent path traversal)
+        const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+        if (sanitizedFilename.length === 0 || sanitizedFilename.startsWith('.')) {
+          return NextResponse.json({ 
+            error: 'Invalid filename' 
+          }, { status: 400 })
+        }
+        
         const buffer = Buffer.from(await file.arrayBuffer())
         attachments.push({
-          filename: file.name,
+          filename: sanitizedFilename,
           content: buffer,
-          mimeType: file.type || 'application/octet-stream'
+          mimeType
         })
       }
     }
@@ -192,20 +240,40 @@ export async function POST(request: NextRequest) {
     if (result.data.id) {
       try {
         // Get user ID from database
-      const user = await prisma.user.findUnique({
-        where: { email: token.email as string }
-      }) as any
+        const user = await prisma.user.findUnique({
+          where: { email: token.email as string }
+        }) as any
 
         if (user) {
-          // Store sent email in database with SENT label
-        await prisma.email.create({
-          data: {
-            gmailId: result.data.id,
-            userId: user.id,
-            threadId: result.data.threadId || '',
-            subject,
-            from: token.email as string,
-            to: [to],
+          // Ensure Gmail email provider exists for this user
+          const emailProvider = await prisma.emailProvider.upsert({
+            where: {
+              userId_provider_email: {
+                userId: user.id,
+                provider: 'gmail',
+                email: user.email!
+              }
+            },
+            update: {
+              isActive: true
+            },
+            create: {
+              userId: user.id,
+              provider: 'gmail',
+              email: user.email!,
+              isActive: true
+            }
+          })
+
+          const sentEmail = await prisma.email.create({
+            data: {
+              externalId: result.data.id,
+              user: { connect: { id: user.id } },
+              provider: { connect: { id: emailProvider.id } },
+              threadId: result.data.threadId || '',
+              subject,
+              from: token.email as string,
+              to: [to],
               cc: [],
               bcc: [],
               content: htmlBody,
@@ -219,6 +287,25 @@ export async function POST(request: NextRequest) {
               isDraft: false,
               receivedAt: new Date()
             }
+          })
+
+          // Notify WebSocket connections about the new sent email
+          wsManager.broadcastToUser(token.email as string, {
+            type: 'gmail-push-notification',
+            payload: {
+              emailAddress: token.email,
+              action: 'email_sent',
+              email: {
+                id: sentEmail.id,
+                externalId: result.data.id,
+                subject,
+                from: token.email,
+                to: [to],
+                receivedAt: sentEmail.receivedAt,
+                labels: ['SENT']
+              }
+            },
+            timestamp: Date.now()
           })
         }
       } catch (dbError) {

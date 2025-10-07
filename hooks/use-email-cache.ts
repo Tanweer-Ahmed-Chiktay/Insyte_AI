@@ -1,5 +1,5 @@
 import useSWR from 'swr'
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import useEmailStore, { Email, CacheInfo } from '@/lib/email-store'
 import { useToast } from '@/components/ui/use-toast'
 
@@ -48,6 +48,7 @@ export function useEmailCache({
     getCacheInfo,
     isLoading: isStoreLoading,
     setEmails,
+    clearCategory,
     setLoading,
     isCacheValid
   } = useEmailStore()
@@ -69,63 +70,50 @@ export function useEmailCache({
   // SWR configuration
   const swrKey = shouldUseCachedData ? null : buildUrl(category, forceRefresh, olderThan, refreshOnly)
   
+  // Memoize SWR callbacks to prevent infinite re-renders
+  const onSuccess = useCallback((data: EmailResponse) => {
+    // Store in Zustand store with pagination metadata
+    const hasMore = data.pagination?.hasMore ?? data.hasMore ?? false
+    const nextOlderThan = data.pagination?.nextOlderThan ?? data.nextOlderThan
+    setEmails(category, data.emails, data.cacheInfo, hasMore, nextOlderThan)
+    
+    // Log cache status instead of showing toast to prevent infinite loops
+    console.log(`[useEmailCache] Emails loaded for ${category}:`, {
+      source: data.cacheInfo.source,
+      cached: data.cacheInfo.cached,
+      newlyFetched: data.cacheInfo.newlyFetched
+    })
+  }, [category, setEmails])
+  
+  const onError = useCallback((error: any) => {
+    console.error(`Failed to fetch emails for ${category}:`, error)
+    // Log error instead of showing toast to prevent infinite loops
+  }, [category])
+  
+  // Memoize SWR configuration to prevent re-initialization
+  const swrConfig = useMemo(() => ({
+    revalidateOnFocus: false, // Disable focus revalidation to reduce requests
+    revalidateOnReconnect: true,
+    dedupingInterval: 60000, // 60 seconds - increased from 30s
+    errorRetryCount: 2, // Reduced from 3 to 2
+    errorRetryInterval: 10000, // Increased from 5s to 10s
+    onSuccess,
+    onError
+  }), [onSuccess, onError])
+  
   const {
     data,
     error,
     isLoading: swrLoading,
     mutate,
     isValidating
-  } = useSWR<EmailResponse>(
-    swrKey,
-    fetcher,
-    {
-      revalidateOnFocus,
-      revalidateOnReconnect: true,
-      dedupingInterval: 30000, // 30 seconds
-      errorRetryCount: 3,
-      errorRetryInterval: 5000,
-      onSuccess: (data) => {
-        // Store in Zustand store with pagination metadata
-        const hasMore = data.pagination?.hasMore ?? data.hasMore ?? false
-        const nextOlderThan = data.pagination?.nextOlderThan ?? data.nextOlderThan
-        setEmails(category, data.emails, data.cacheInfo, hasMore, nextOlderThan)
-        
-        // Show cache status toast
-        if (data.cacheInfo.source === 'cache') {
-          toast({
-            title: "Emails loaded from cache",
-            description: `${data.cacheInfo.cached} emails loaded instantly`,
-            duration: 2000
-          })
-        } else if (data.cacheInfo.source === 'gmail') {
-          toast({
-            title: "Fresh emails fetched",
-            description: `${data.cacheInfo.newlyFetched} new emails from Gmail`,
-            duration: 3000
-          })
-        } else if (data.cacheInfo.source === 'mixed') {
-          toast({
-            title: "Emails updated",
-            description: `${data.cacheInfo.cached} cached + ${data.cacheInfo.newlyFetched} new emails`,
-            duration: 3000
-          })
-        }
-      },
-      onError: (error) => {
-        console.error(`Failed to fetch emails for ${category}:`, error)
-        toast({
-          title: "Failed to load emails",
-          description: error.message || "Please try again",
-          variant: "destructive",
-          duration: 5000
-        })
-      }
-    }
-  )
+  } = useSWR<EmailResponse>(swrKey, fetcher, swrConfig)
 
   // Get emails from store (either cached or freshly fetched)
-  const emails = data?.emails || getEmails(category)
-  const cacheInfo = data?.cacheInfo || getCacheInfo(category)
+  // Always prioritize store data to ensure real-time updates are reflected
+  const storeEmails = getEmails(category)
+  const emails = storeEmails.length > 0 ? storeEmails : (data?.emails || [])
+  const cacheInfo = getCacheInfo(category) || data?.cacheInfo
   const isLoading = swrLoading || isStoreLoading(category)
 
   // Prefetch other categories in background
@@ -151,31 +139,75 @@ export function useEmailCache({
     }
   }, [emails.length, category, enablePrefetch, buildUrl, setEmails, isCacheValid, maxAgeMinutes])
 
-  // Refresh function
+  // Cache invalidation function
+  const invalidateCache = useCallback(() => {
+    console.log(`[useEmailCache] Invalidating cache for ${category}`)
+    // Clear SWR cache
+    mutate(undefined, { revalidate: false })
+    // Clear store cache
+    clearCategory(category)
+  }, [mutate, category, clearCategory])
+
+  // Refresh function with improved error handling
   const refresh = useCallback(async (force: boolean = false) => {
+    console.log(`[useEmailCache] Refresh called for ${category}, force: ${force}`)
     setLoading(category, true)
     try {
       if (force) {
-        // Force refresh by fetching new data with refreshOnly flag
-        const freshData = await fetcher(buildUrl(category, false, undefined, true))
+        // Force refresh by fetching new data without refreshOnly flag for better UI updates
+        console.log(`[useEmailCache] Force refreshing ${category} emails`)
+        const freshData = await fetcher(buildUrl(category, true, undefined, false))
         const hasMore = freshData.pagination?.hasMore ?? freshData.hasMore ?? false
         const nextOlderThan = freshData.pagination?.nextOlderThan ?? freshData.nextOlderThan
+        
+        // Update store first for immediate UI update
         setEmails(category, freshData.emails, freshData.cacheInfo, hasMore, nextOlderThan)
+        console.log(`[useEmailCache] Updated ${category} with ${freshData.emails.length} emails`)
+        
+        // Then update SWR cache
         await mutate(freshData, {
           revalidate: false,
           populateCache: true
         })
       } else {
         // Regular refresh
+        console.log(`[useEmailCache] Regular refresh for ${category}`)
         await mutate(undefined, {
           revalidate: true,
           populateCache: true
         })
       }
+    } catch (error) {
+      console.error(`[useEmailCache] Refresh failed for ${category}:`, error)
+      
+      // Enhanced error handling with user feedback
+      if (error instanceof Error) {
+        if (error.message.includes('401') || error.message.includes('unauthorized')) {
+          toast({
+            title: 'Authentication Error',
+            description: 'Please sign in again to continue.',
+            variant: 'destructive'
+          })
+        } else if (error.message.includes('network') || error.message.includes('fetch')) {
+          toast({
+            title: 'Network Error',
+            description: 'Please check your internet connection and try again.',
+            variant: 'destructive'
+          })
+        } else {
+          toast({
+            title: 'Refresh Failed',
+            description: 'Unable to refresh emails. Please try again.',
+            variant: 'destructive'
+          })
+        }
+      }
+      
+      throw error
     } finally {
       setLoading(category, false)
     }
-  }, [mutate, category, setLoading, buildUrl])
+  }, [mutate, category, setLoading, buildUrl, setEmails, toast])
 
   // Load older emails function
   const loadOlderEmails = useCallback(async (olderThanDate: string) => {
@@ -238,6 +270,7 @@ export function useEmailCache({
     isValidating,
     error,
     refresh,
+    invalidateCache,
     backgroundSync,
     loadOlderEmails,
     hasMore: data?.pagination?.hasMore ?? data?.hasMore ?? cacheInfo?.hasMore ?? false,

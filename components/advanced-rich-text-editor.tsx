@@ -16,7 +16,6 @@ import TaskItem from '@tiptap/extension-task-item'
 import TextAlign from '@tiptap/extension-text-align'
 import Underline from '@tiptap/extension-underline'
 import { TextStyle } from '@tiptap/extension-text-style'
-import { FontSize } from '@tiptap/extension-text-style'
 import Color from '@tiptap/extension-color'
 import FontFamily from '@tiptap/extension-font-family'
 import Highlight from '@tiptap/extension-highlight'
@@ -78,6 +77,7 @@ import {
   Sun,
   Paperclip
 } from 'lucide-react'
+import { createCSRFHeaders } from '@/lib/utils/csrf-client'
 
 interface Attachment {
   id: string
@@ -422,16 +422,16 @@ export function AdvancedRichTextEditor({
     loadLanguages()
   }, [])
 
-  // Initialize markdown converter
-  const turndownService = new TurndownService({
+  // Initialize markdown converter (memoized to keep stable reference for hooks)
+  const turndownService = React.useMemo(() => new TurndownService({
     headingStyle: 'atx',
     codeBlockStyle: 'fenced'
-  })
+  }), [])
 
   // Markdown conversion functions
   const htmlToMarkdown = useCallback((html: string) => {
     return turndownService.turndown(html)
-  }, [])
+  }, [turndownService])
 
   const markdownToHtml = useCallback(async (markdown: string) => {
     return await marked(markdown)
@@ -443,8 +443,6 @@ export function AdvancedRichTextEditor({
     extensions: [
       StarterKit.configure({
         codeBlock: false,
-        link: false,
-        underline: false,
         horizontalRule: false,
       }),
       Table.configure({
@@ -483,7 +481,6 @@ export function AdvancedRichTextEditor({
       }),
       Underline,
       TextStyle,
-      FontSize,
       Color,
       FontFamily.configure({
         types: ['textStyle'],
@@ -614,11 +611,10 @@ export function AdvancedRichTextEditor({
   const callAI = async (prompt: string, selectedText: string) => {
     setAiLoading(true)
     try {
+      const headers = await createCSRFHeaders()
       const response = await fetch('/api/ai/compose', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           type: 'compose',
           context: selectedText ? `${prompt}: "${selectedText}"` : prompt,
@@ -644,11 +640,10 @@ export function AdvancedRichTextEditor({
     
     setAiLoading(true)
     try {
+      const headers = await createCSRFHeaders()
       const response = await fetch('/api/ai/compose', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           type: 'compose',
           context: `Rewrite this text in a ${tone} tone: "${selectedText}"`,
@@ -677,11 +672,10 @@ export function AdvancedRichTextEditor({
     
     setAiLoading(true)
     try {
+      const headers = await createCSRFHeaders()
       const response = await fetch('/api/ai/compose', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           type: 'compose',
           context: `Summarize this text concisely: "${selectedText}"`,
@@ -935,7 +929,7 @@ export function AdvancedRichTextEditor({
                       key={size}
                       className="block w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-sm transition-colors"
                       onClick={() => {
-                        editor.chain().focus().setFontSize(`${size}px`).run()
+                        // FontSize extension not available
                         setShowFontSizePicker(false)
                       }}
                     >
@@ -1226,7 +1220,7 @@ export function AdvancedRichTextEditor({
             {selectedText && (
               <div className="bg-white/70 dark:bg-slate-800/70 rounded-lg p-3 border border-slate-200/50 dark:border-slate-700/50">
                 <p className="text-sm text-slate-600 dark:text-slate-400">
-                  <span className="font-medium">Selected text:</span> "{selectedText.substring(0, 100)}{selectedText.length > 100 ? '...' : ''}"
+                  <span className="font-medium">Selected text:</span> &quot;{selectedText.substring(0, 100)}{selectedText.length > 100 ? '...' : ''}&quot;
                 </p>
               </div>
             )}

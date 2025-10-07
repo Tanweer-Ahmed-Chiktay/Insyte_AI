@@ -29,6 +29,24 @@ yarn-error.log*
 .env*.local
 .env
 
+# Debug and test files
+test-*.js
+check-*.js
+setup-*.js
+fix-*.js
+debug-*.js
+refresh-*.js
+add-*.js
+*.backup
+
+# Archive files
+*.zip
+*.tar.gz
+
+# Cookies and temporary files
+cookies.txt
+fix.json
+
 # vercel
 .vercel
 

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pusher Client Test</title>
+    <script src="https://js.pusher.com/8.2.0/pusher.min.js"></script>
+</head>
+<body>
+    <h1>Pusher Client Test</h1>
+    <div id="status">Connecting...</div>
+    <div id="logs"></div>
+    
+    <script>
+        // Enable Pusher logging
+        Pusher.logToConsole = true;
+        
+        const log = (message) => {
+            const logs = document.getElementById('logs');
+            logs.innerHTML += '<div>' + new Date().toLocaleTimeString() + ': ' + message + '</div>';
+        };
+        
+        const updateStatus = (status) => {
+            document.getElementById('status').textContent = status;
+        };
+        
+        // Test with the correct Pusher credentials
+        const pusher = new Pusher('fc1597877650e530dfd2', {
+            cluster: 'us3',
+            forceTLS: true,
+            authEndpoint: '/api/pusher/auth',
+            auth: {
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            },
+        });
+        
+        pusher.connection.bind('connecting', () => {
+            updateStatus('Connecting to Pusher...');
+            log('Connecting to Pusher');
+        });
+        
+        pusher.connection.bind('connected', () => {
+            updateStatus('Connected to Pusher!');
+            log('Successfully connected to Pusher');
+            log('Socket ID: ' + pusher.connection.socket_id);
+        });
+        
+        pusher.connection.bind('disconnected', () => {
+            updateStatus('Disconnected from Pusher');
+            log('Disconnected from Pusher');
+        });
+        
+        pusher.connection.bind('error', (err) => {
+            updateStatus('Connection Error');
+            log('Connection error: ' + JSON.stringify(err));
+        });
+        
+        // Test subscribing to a channel
+        const channel = pusher.subscribe('private-test');
+        
+        channel.bind('pusher:subscription_succeeded', () => {
+            log('Successfully subscribed to private-test channel');
+        });
+        
+        channel.bind('pusher:subscription_error', (err) => {
+            log('Subscription error: ' + JSON.stringify(err));
+        });
+        
+        // Test event
+        channel.bind('test-event', (data) => {
+            log('Received test event: ' + JSON.stringify(data));
+        });
+    </script>
+</body>
+</html>

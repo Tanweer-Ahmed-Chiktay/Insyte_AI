@@ -45,6 +45,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { AIAssistant } from '@/components/ai-assistant'
 import { ContactsTab } from '@/components/contacts-tab'
 import { SlackTab } from '@/components/slack-tab'
+import { CalendarTab } from '@/components/calendar-tab'
 import { AccountSwitcher } from '@/components/account-switcher'
 import { startEmailScheduler } from '@/lib/scheduler'
 import DOMPurify from 'dompurify'
@@ -62,6 +63,7 @@ import { PaneManager } from '@/components/pane-manager'
 import { EmailPane } from '@/components/email-pane'
 import { formatEmailDate } from '@/lib/date-utils'
 import { VirtualEmailList } from '@/components/virtual-email-list'
+import { createCSRFHeaders } from '@/lib/utils/csrf-client'
 
 // Cache configuration
 const CACHE_KEYS = {
@@ -410,18 +412,10 @@ export default function EmailDashboardWithPanes() {
         console.log('Setting up Gmail watch for real-time notifications')
         
         // Get CSRF token first
-        const csrfResponse = await fetch('/api/csrf-token')
-        if (!csrfResponse.ok) {
-          throw new Error('Failed to get CSRF token')
-        }
-        const { csrfToken } = await csrfResponse.json()
-        
         // Make the watch setup request with CSRF token
         const response = await fetch('/api/gmail/watch', { 
           method: 'POST',
-          headers: {
-            'x-csrf-token': csrfToken
-          }
+          headers: await createCSRFHeaders()
         })
         
         if (response.ok) {
@@ -527,25 +521,44 @@ export default function EmailDashboardWithPanes() {
       
       const emailLabels = (email as any).labelIds || (email as any).labels || []
       
+      // Helper function to check if email has any of the specified labels
+      const hasAnyLabel = (labels: string[]) => labels.some(label => emailLabels.includes(label))
+      
+      // Define Gmail label constants for better organization
+      const GMAIL_LABELS = {
+        SENT: ['SENT', 'SENT_MAIL'],
+        DRAFT: ['DRAFT', 'DRAFTS'],
+        TRASH: ['TRASH', 'BIN', 'DELETED', 'SPAM'],
+        ARCHIVE: ['ARCHIVE', 'ARCHIVED'],
+        PROMOTIONS: ['CATEGORY_PROMOTIONS', 'PROMOTIONS'],
+        SOCIAL: ['CATEGORY_SOCIAL', 'SOCIAL'],
+        UPDATES: ['CATEGORY_UPDATES', 'UPDATES'],
+        FORUMS: ['CATEGORY_FORUMS', 'FORUMS']
+      }
+      
       switch (currentSection) {
         case 'inbox':
-          return matchesSearch && !emailLabels.includes('SENT') && !emailLabels.includes('DRAFT') && !emailLabels.includes('TRASH')
+          return matchesSearch && 
+                 !hasAnyLabel(GMAIL_LABELS.SENT) && 
+                 !hasAnyLabel(GMAIL_LABELS.DRAFT) && 
+                 !hasAnyLabel(GMAIL_LABELS.TRASH) &&
+                 !hasAnyLabel(GMAIL_LABELS.ARCHIVE)
         case 'starred':
-          return matchesSearch && email.isStarred
+          return matchesSearch && email.isStarred && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'sent':
-          return matchesSearch && emailLabels.includes('SENT')
+          return matchesSearch && hasAnyLabel(GMAIL_LABELS.SENT) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'drafts':
-          return matchesSearch && emailLabels.includes('DRAFT')
+          return matchesSearch && hasAnyLabel(GMAIL_LABELS.DRAFT) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'important':
-          return matchesSearch && email.isImportant
+          return matchesSearch && email.isImportant && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'promotions':
-          return matchesSearch && (emailLabels.includes('CATEGORY_PROMOTIONS') || emailLabels.includes('PROMOTIONS'))
+          return matchesSearch && hasAnyLabel(GMAIL_LABELS.PROMOTIONS) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'social':
-          return matchesSearch && (emailLabels.includes('CATEGORY_SOCIAL') || emailLabels.includes('SOCIAL'))
+          return matchesSearch && hasAnyLabel(GMAIL_LABELS.SOCIAL) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'trash':
-          return matchesSearch && emailLabels.includes('TRASH')
+          return matchesSearch && hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'archive':
-          return matchesSearch && emailLabels.includes('ARCHIVE')
+          return matchesSearch && hasAnyLabel(GMAIL_LABELS.ARCHIVE) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'calendar':
           // For calendar, we'll show a placeholder for now - this would need calendar integration
           return false
@@ -569,15 +582,18 @@ export default function EmailDashboardWithPanes() {
   // Scheduler is automatically started in lib/scheduler.ts
   
   const handleEmailSelect = useCallback(async (email: Email, paneId?: string) => {
+    console.log('handleEmailSelect called with:', email.id, email.subject, 'paneId:', paneId)
     try {
       // Mark email as read
       if (!email.isRead) {
+        console.log('Marking email as read:', email.id)
         emailStore.updateEmail(email.id, { isRead: true })
         
         try {
+          const headers = await createCSRFHeaders()
           await fetch(`/api/emails/${email.id}/read`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
+            headers
           })
         } catch (error) {
           console.error('Error marking email as read:', error)
@@ -586,11 +602,14 @@ export default function EmailDashboardWithPanes() {
 
       // Load email into the main pane using the pane manager
       const targetPaneId = paneId || 'main'
+      console.log('Using targetPaneId:', targetPaneId, 'paneUpdateRef.current exists:', !!paneUpdateRef.current)
       if (paneUpdateRef.current) {
         // Set loading state
+        console.log('Setting loading state for pane:', targetPaneId)
         paneUpdateRef.current(targetPaneId, { email, isLoading: true, fullEmail: null })
         
         // Fetch full email content
+        console.log('Fetching full email content for:', email.id)
         const response = await fetch(`/api/emails/${email.id}`)
         if (!response.ok) {
           if (response.status === 401) {
@@ -643,36 +662,28 @@ export default function EmailDashboardWithPanes() {
   }, [emailStore, toast])
   
   const loadEmailIntoPane = useCallback(async (email: Email, paneId?: string) => {
+       console.log('loadEmailIntoPane called with:', email.id, email.subject, 'paneId:', paneId)
        // If no specific pane is provided, use the active pane or find the best available pane
        let targetPane: string = paneId || activePaneRef.current || 'main'
        if (!paneId) {
          // Prefer the active pane, then find the best pane to load into (preferring empty panes, then any existing pane)
          const availablePanes = panesRef.current
+         console.log('Available panes:', availablePanes.map(p => ({ id: p.id, hasEmail: !!p.email })))
          const activePane = availablePanes.find(p => p.id === activePaneRef.current)
          const emptyPane = availablePanes.find(p => !p.email)
          const anyPane = availablePanes[0] // Use first pane if no empty ones
          targetPane = activePane?.id || emptyPane?.id || anyPane?.id || 'main'
        }
-       
-       // Update the pane with the email and set loading state
-       if (paneUpdateRef.current) {
-         paneUpdateRef.current(targetPane, { email, isLoading: true, fullEmail: null })
-       }
+       console.log('Target pane selected:', targetPane)
        
        try {
+         // Call handleEmailSelect which will handle all pane updates internally
+         console.log('Calling handleEmailSelect with targetPane:', targetPane)
          const fullEmail = await handleEmailSelect(email, targetPane)
-         
-         // Update the pane with the full email content
-         if (paneUpdateRef.current && fullEmail) {
-           paneUpdateRef.current(targetPane, { fullEmail, isLoading: false })
-         }
-         
+         console.log('handleEmailSelect completed, fullEmail:', !!fullEmail)
          return fullEmail
        } catch (error) {
          console.error('Error loading email into pane:', error)
-         if (paneUpdateRef.current) {
-           paneUpdateRef.current(targetPane, { isLoading: false })
-         }
          return null
        }
      }, [handleEmailSelect])
@@ -682,19 +693,28 @@ export default function EmailDashboardWithPanes() {
       switch (action) {
         case 'star':
           emailStore.updateEmail(email.id, { isStarred: !email.isStarred })
+          const starHeaders = await createCSRFHeaders()
           await fetch(`/api/emails/${email.id}/star`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: starHeaders,
             body: JSON.stringify({ starred: !email.isStarred })
           })
           break
         case 'archive':
           emailStore.updateEmail(email.id, { isRead: true })
-          await fetch(`/api/emails/${email.id}/archive`, { method: 'POST' })
+          const archiveHeaders = await createCSRFHeaders()
+          await fetch(`/api/emails/${email.id}/archive`, { 
+            method: 'POST',
+            headers: archiveHeaders
+          })
           break
         case 'delete':
           emailStore.updateEmail(email.id, { isRead: true })
-          await fetch(`/api/emails/${email.id}`, { method: 'DELETE' })
+          const deleteHeaders = await createCSRFHeaders()
+          await fetch(`/api/emails/${email.id}`, { 
+            method: 'DELETE',
+            headers: deleteHeaders
+          })
           break
         default:
           console.log(`Action ${action} not implemented yet`)
@@ -1047,6 +1067,8 @@ export default function EmailDashboardWithPanes() {
         <div className="flex-1 flex min-h-0">
           {currentSection === 'slack' ? (
             <SlackTab />
+          ) : currentSection === 'calendar' ? (
+            <CalendarTab />
           ) : isDesktop ? (
             <div className="flex-1 flex min-h-0">
               {/* Email List Panel */}
@@ -1097,9 +1119,22 @@ export default function EmailDashboardWithPanes() {
                           } : undefined
                         }))}
                         onEmailSelect={(email) => {
+                          console.log('Desktop: Email clicked:', email.id, email.subject)
                           const originalEmail = filteredEmails.find(e => e.id === email.id)
                           if (originalEmail) {
+                            console.log('Desktop: Found original email, setting selected and loading into pane')
+                            setSelectedEmail(originalEmail)
                             loadEmailIntoPane(originalEmail)
+                          } else {
+                            console.error('Desktop: Original email not found for ID:', email.id)
+                          }
+                        }}
+                        onEmailDrop={(emailId: string, targetPane: string) => {
+                          const email = filteredEmails.find(e => e.id === emailId)
+                          if (email && dragHandlersRef.current) {
+                            dragHandlersRef.current.onDragStart(email)
+                            loadEmailIntoPane(email, targetPane)
+                            dragHandlersRef.current.onDragEnd()
                           }
                         }}
                         selectedEmailId={selectedEmail?.id}
@@ -1314,29 +1349,41 @@ export default function EmailDashboardWithPanes() {
                     ) : (
                       <div className="h-full">
                         <VirtualEmailList
-                          emails={filteredEmails.map(email => ({
-                            id: email.id,
-                            subject: email.subject,
-                            from: email.from,
-                            snippet: email.snippet,
-                            date: email.receivedAt,
-                            isRead: email.isRead,
-                            isStarred: email.isStarred,
-                            isImportant: email.isImportant,
-                            hasAttachments: false, // Add attachment detection logic if needed
-                            summary: email.summary ? {
-                              summary: email.summary.summary,
-                              keyPoints: email.summary.keyPoints
-                            } : undefined
-                          }))}
-                          onEmailSelect={(selectedEmailItem) => {
-                            const originalEmail = filteredEmails.find(e => e.id === selectedEmailItem.id)
-                            if (originalEmail) {
-                              loadEmailIntoPane(originalEmail)
-                            }
-                          }}
-                          selectedEmailId={undefined}
-                        />
+                            emails={filteredEmails.map(email => ({
+                              id: email.id,
+                              subject: email.subject,
+                              from: email.from,
+                              snippet: email.snippet,
+                              date: email.receivedAt,
+                              isRead: email.isRead,
+                              isStarred: email.isStarred,
+                              isImportant: email.isImportant,
+                              hasAttachments: false, // Add attachment detection logic if needed
+                              summary: email.summary ? {
+                                summary: email.summary.summary,
+                                keyPoints: email.summary.keyPoints
+                              } : undefined
+                            }))}
+                            onEmailSelect={(selectedEmailItem) => {
+                              console.log('Mobile: Email clicked:', selectedEmailItem.id, selectedEmailItem.subject)
+                              const originalEmail = filteredEmails.find((e: Email) => e.id === selectedEmailItem.id)
+                              if (originalEmail) {
+                                console.log('Mobile: Found original email, setting selected and loading into pane')
+                                setSelectedEmail(originalEmail)
+                                loadEmailIntoPane(originalEmail)
+                              } else {
+                                console.error('Mobile: Original email not found for ID:', selectedEmailItem.id)
+                              }
+                            }}
+                            onEmailDrop={(emailId: string, targetPane: string) => {
+                               const email = filteredEmails.find((e: Email) => e.id === emailId)
+                               if (email) {
+                                 setSelectedEmail(email)
+                                 loadEmailIntoPane(email, targetPane)
+                               }
+                             }}
+                            selectedEmailId={(selectedEmail as Email | null)?.id}
+                          />
                         
                         {/* Load More Button */}
                         {hasMore && (

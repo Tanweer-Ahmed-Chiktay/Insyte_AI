@@ -15,19 +15,26 @@ model User {
   id            String    @id @default(cuid())
   name          String?
   email         String    @unique
+  emailVerified DateTime?
   image         String?
+  historyId     String?   @map("history_id")
+  watchExpiration DateTime? @map("watch_expiration")
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   
   // Relations
-  accounts       Account[]
-  sessions       Session[]
-  emails         Email[]
-  emailSummaries EmailSummary[]
-  scheduledEmails ScheduledEmail[]
-  preferences    UserPreferences?
-  contacts       Contact[]
-  chatMessages   ChatMessage[]
+  accounts         Account[]
+  sessions         Session[]
+  emails           Email[]
+  emailProviders   EmailProvider[]
+  emailSummaries   EmailSummary[]
+  scheduledEmails  ScheduledEmail[]
+  preferences      UserPreferences?
+  contacts         Contact[]
+  chatMessages     ChatMessage[]
+  calendarProviders CalendarProvider[]
+  calendarEvents   CalendarEvent[]
+  slackWorkspaces  SlackWorkspace[]
   
   @@map("users")
 }
@@ -45,6 +52,8 @@ model Account {
   scope             String?
   id_token          String? @db.Text
   session_state     String?
+  refresh_token_expires_in Int?
+  gmail_history_id  String? @map("gmail_history_id")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -71,36 +80,60 @@ model VerificationToken {
   @@map("verificationtokens")
 }
 
-model Email {
+model EmailProvider {
   id          String   @id @default(cuid())
-  gmailId     String   @unique @map("gmail_id")
   userId      String   @map("user_id")
-  threadId    String   @map("thread_id")
-  subject     String
-  from        String
-  to          String[]
-  cc          String[] @default([])
-  bcc         String[] @default([])
-  content     String   @db.Text
-  snippet     String?
-  labels      String[] @default([])
-  isRead      Boolean  @default(false) @map("is_read")
-  isStarred   Boolean  @default(false) @map("is_starred")
-  isImportant Boolean  @default(false) @map("is_important")
-  isSpam      Boolean  @default(false) @map("is_spam")
-  isTrash     Boolean  @default(false) @map("is_trash")
-  isDraft     Boolean  @default(false) @map("is_draft")
-  receivedAt  DateTime @map("received_at")
+  provider    String   // 'gmail', 'outlook', 'imap', 'apple'
+  email       String
+  isActive    Boolean  @default(true) @map("is_active")
+  settings    Json?    // Provider-specific settings
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
   
   // Relations
-  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  summaries EmailSummary[]
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emails Email[]
   
-  @@index([userId, gmailId])
+  @@unique([userId, provider, email])
+  @@index([userId, isActive])
+  @@map("email_providers")
+}
+
+model Email {
+  id              String   @id @default(cuid())
+  providerId      String   @map("provider_id")
+  externalId      String   @map("external_id") // Gmail ID, Outlook ID, etc.
+  userId          String   @map("user_id")
+  threadId        String?  @map("thread_id")
+  subject         String
+  from            String
+  to              String[]
+  cc              String[] @default([])
+  bcc             String[] @default([])
+  content         String?  @db.Text
+  snippet         String?
+  labels          String[] @default([])
+  isRead          Boolean  @default(false) @map("is_read")
+  isStarred       Boolean  @default(false) @map("is_starred")
+  isImportant     Boolean  @default(false) @map("is_important")
+  isSpam          Boolean  @default(false) @map("is_spam")
+  isTrash         Boolean  @default(false) @map("is_trash")
+  isDraft         Boolean  @default(false) @map("is_draft")
+  hasAttachments  Boolean  @default(false) @map("has_attachments")
+  attachments     Json?    // Attachment metadata
+  receivedAt      DateTime @map("received_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     EmailProvider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  summaries    EmailSummary[]
+  
+  @@unique([providerId, externalId])
   @@index([userId, receivedAt])
   @@index([userId, isRead])
+  @@index([providerId, threadId])
   @@map("emails")
 }
 
@@ -197,4 +230,111 @@ model ChatMessage {
   
   @@index([userId, createdAt])
   @@map("chat_messages")
+}
+
+model CalendarProvider {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  provider    String   // 'google', 'outlook', 'apple'
+  email       String
+  isActive    Boolean  @default(true) @map("is_active")
+  settings    Json?    // Provider-specific settings
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events CalendarEvent[]
+  
+  @@unique([userId, provider, email])
+  @@index([userId, isActive])
+  @@map("calendar_providers")
+}
+
+model CalendarEvent {
+  id          String   @id @default(cuid())
+  providerId  String   @map("provider_id")
+  externalId  String   @map("external_id") // Google Event ID, Outlook Event ID, etc.
+  userId      String   @map("user_id")
+  title       String
+  description String?  @db.Text
+  location    String?
+  startTime   DateTime @map("start_time")
+  endTime     DateTime @map("end_time")
+  isAllDay    Boolean  @default(false) @map("is_all_day")
+  attendees   Json?    // Array of attendee objects
+  recurrence  Json?    // Recurrence rules
+  status      String   @default("confirmed") // confirmed, tentative, cancelled
+  visibility  String   @default("default") // default, public, private
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider CalendarProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  
+  @@unique([providerId, externalId])
+  @@index([userId, startTime])
+  @@index([providerId, startTime])
+  @@map("calendar_events")
+}
+
+model SlackWorkspace {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  teamId      String   @map("team_id")
+  teamName    String   @map("team_name")
+  isActive    Boolean  @default(true) @map("is_active")
+  accessToken String   @map("access_token") @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channels SlackChannel[]
+  messages SlackMessage[]
+  
+  @@unique([userId, teamId])
+  @@index([userId, isActive])
+  @@map("slack_workspaces")
+}
+
+model SlackChannel {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  channelId   String   @map("channel_id")
+  name        String
+  isPrivate   Boolean  @default(false) @map("is_private")
+  isMember    Boolean  @default(false) @map("is_member")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  workspace SlackWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  messages  SlackMessage[]
+  
+  @@unique([workspaceId, channelId])
+  @@index([workspaceId, isMember])
+  @@map("slack_channels")
+}
+
+model SlackMessage {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  channelId   String   @map("channel_id")
+  messageId   String   @map("message_id")
+  userId      String?  @map("user_id")
+  username    String?
+  text        String   @db.Text
+  timestamp   DateTime
+  threadTs    String?  @map("thread_ts")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  // Relations
+  workspace SlackWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   SlackChannel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  
+  @@unique([workspaceId, channelId, messageId])
+  @@index([workspaceId, channelId, timestamp])
+  @@map("slack_messages")
 }

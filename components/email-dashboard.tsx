@@ -44,10 +44,12 @@ import { cn } from '@/lib/utils'
 import { useToast } from '@/components/ui/use-toast'
 import { AIAssistant } from '@/components/ai-assistant'
 import { ContactsTab } from '@/components/contacts-tab'
+import { AccountSwitcher } from '@/components/account-switcher'
 import { startEmailScheduler } from '@/lib/scheduler'
 import DOMPurify from 'dompurify'
 import { useEmailCache, useEmailPersistence, usePrefetchEmails } from '@/hooks/use-email-cache'
 import useEmailStore from '@/lib/email-store'
+import { useWebSocketUnified } from '@/hooks/use-websocket-unified'
 import EmailDashboardWithPanes from './email-dashboard-with-panes'
 import { 
   EmailListSkeleton, 
@@ -55,6 +57,8 @@ import {
   EmailSidebarSkeleton,
   EmailStatsCardSkeleton 
 } from '@/components/ui/skeleton-loader'
+import { VirtualEmailList } from '@/components/virtual-email-list'
+import { createCSRFHeaders } from '@/lib/utils/csrf-client'
 
 // Cache utility functions
 const CACHE_KEYS = {
@@ -189,6 +193,9 @@ export function EmailDashboardOriginal() {
   const [isMobilePreviewOpen, setIsMobilePreviewOpen] = useState(false)
   const [generatingSummaries, setGeneratingSummaries] = useState<Set<string>>(new Set())
 
+  // WebSocket connection for real-time updates
+  const { isConnected } = useWebSocketUnified()
+
   // Use SWR-based email caching
   const { 
     emails, 
@@ -234,11 +241,7 @@ export function EmailDashboardOriginal() {
 
   useEffect(() => {
     if (session) {
-      // Note: Email scheduler is auto-started in production via scheduler.ts
-      // In development, we start it once when user is authenticated
-      if (process.env.NODE_ENV === 'development') {
-        startEmailScheduler()
-      }
+      // Note: Email scheduler is auto-started in scheduler.ts
       
       // Background sync on login
       backgroundSync()
@@ -252,6 +255,9 @@ export function EmailDashboardOriginal() {
        })
     }
   }, [session, backgroundSync, prefetch, currentSection])
+
+  // WebSocket connection is now handled by the useWebSocket hook above
+  // Real-time notifications will be processed automatically
 
   // SWR handles email loading automatically
 
@@ -285,11 +291,10 @@ export function EmailDashboardOriginal() {
             // Add delay between requests
             await new Promise(resolve => setTimeout(resolve, index * 2000))
             
+            const headers = await createCSRFHeaders()
             const response = await fetch('/api/ai/summarize', {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
+              headers,
               body: JSON.stringify({
                 emailId: email.id
               })
@@ -356,11 +361,41 @@ export function EmailDashboardOriginal() {
         saveToCache(cacheKey, fullEmail)
         return fullEmail
       } else {
-        console.error('Failed to fetch full email content')
+        if (response.status === 401) {
+          console.error('Authentication expired when fetching email content')
+          toast({
+            title: 'Authentication Required',
+            description: 'Your session has expired. Please sign in again.',
+            variant: 'destructive'
+          })
+          // Redirect to sign in after a short delay
+          setTimeout(() => {
+            window.location.href = '/api/auth/signin'
+          }, 2000)
+        } else if (response.status === 404) {
+          console.error('Email not found')
+          toast({
+            title: 'Error',
+            description: 'Email not found',
+            variant: 'destructive'
+          })
+        } else {
+          console.error(`Failed to fetch full email content (${response.status})`)
+          toast({
+            title: 'Error',
+            description: `Failed to fetch email content (${response.status})`,
+            variant: 'destructive'
+          })
+        }
         return null
       }
     } catch (error) {
       console.error('Error fetching full email content:', error)
+      toast({
+        title: 'Error',
+        description: 'Failed to load email content. Please try again.',
+        variant: 'destructive'
+      })
       return null
     } finally {
       setIsLoadingFullEmail(false)
@@ -400,11 +435,10 @@ export function EmailDashboardOriginal() {
     // Generate AI summary only if not already available
     if (!email.summary && (!loadFromCache(CACHE_KEYS.EMAIL_SUMMARIES)?.[email.id])) {
       try {
+        const headers = await createCSRFHeaders()
         const response = await fetch('/api/ai/summarize', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers,
           body: JSON.stringify({
             emailId: email.id
           })
@@ -839,15 +873,7 @@ export function EmailDashboardOriginal() {
                   </p>
                 </div>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => signOut({ callbackUrl: '/' })}
-                className="w-full h-8 text-xs"
-              >
-                <LogOut className="mr-2 h-3 w-3" />
-                Sign Out
-              </Button>
+              <AccountSwitcher />
             </div>
           </motion.aside>
         )}
@@ -959,77 +985,32 @@ export function EmailDashboardOriginal() {
                     </div>
                   ) : (
                     <>
-                      {filteredEmails.map((email) => (
-                        <motion.div
-                          key={email.id}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className={cn(
-                            'p-3 border-b border-border cursor-pointer hover:bg-accent transition-colors',
-                            selectedEmail?.id === email.id && 'bg-accent',
-                            !email.isRead && 'bg-blue-50/50 dark:bg-blue-900/10'
-                          )}
-                          onClick={() => handleEmailSelect(email)}
-                        >
-                          <div className="flex items-start justify-between mb-1.5">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center space-x-1.5">
-                                <p className={cn(
-                                  'text-xs font-medium truncate',
-                                  !email.isRead && 'font-semibold'
-                                )}>
-                                  {email.from.split('<')[0].trim() || email.from}
-                                </p>
-                                {email.isImportant && (
-                                  <Sparkles className="h-2.5 w-2.5 text-yellow-500 flex-shrink-0" />
-                                )}
-                                {email.summary ? (
-                                  <div className="flex items-center space-x-1">
-                                    <Bot className="h-2.5 w-2.5 text-blue-500 flex-shrink-0" />
-                                    <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">AI</span>
-                                  </div>
-                                ) : generatingSummaries.has(email.id) ? (
-                                  <div className="flex items-center space-x-1">
-                                    <div className="h-2.5 w-2.5 rounded-full bg-gray-300 dark:bg-gray-600 animate-pulse flex-shrink-0" />
-                                    <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">Generating...</span>
-                                  </div>
-                                ) : null}
-                              </div>
-                              <p className={cn(
-                                'text-xs truncate mt-0.5',
-                                !email.isRead ? 'font-semibold' : 'text-muted-foreground'
-                              )}>
-                                {email.subject}
-                              </p>
-                            </div>
-                            <div className="flex items-center space-x-1 ml-2 flex-shrink-0">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  toggleStar(email.id)
-                                }}
-                                className="h-5 w-5 p-0"
-                              >
-                                <Star className={cn(
-                                  'h-2.5 w-2.5',
-                                  email.isStarred ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'
-                                )} />
-                              </Button>
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(email.receivedAt).toLocaleDateString() === new Date().toLocaleDateString() 
-                                  ? new Date(email.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                                  : new Date(email.receivedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })
-                                }
-                              </span>
-                            </div>
-                          </div>
-                          <p className="text-xs text-muted-foreground truncate">
-                            {email.snippet}
-                          </p>
-                        </motion.div>
-                      ))}
+                      <div className="h-full">
+                        <VirtualEmailList
+                          emails={filteredEmails.map(email => ({
+                            id: email.id,
+                            subject: email.subject,
+                            from: email.from,
+                            snippet: email.snippet,
+                            date: email.receivedAt,
+                            isRead: email.isRead,
+                            isStarred: email.isStarred,
+                            isImportant: email.isImportant,
+                            hasAttachments: false, // Add attachment detection logic if needed
+                            summary: email.summary ? {
+                              summary: email.summary.summary,
+                              keyPoints: email.summary.keyPoints
+                            } : undefined
+                          }))}
+                          onEmailSelect={(email) => {
+                            const originalEmail = filteredEmails.find(e => e.id === email.id)
+                            if (originalEmail) {
+                              handleEmailSelect(originalEmail)
+                            }
+                          }}
+                          selectedEmailId={selectedEmail?.id}
+                        />
+                      </div>
                       
                       {/* Load More Button */}
                       {hasMore && nextOlderThan && (

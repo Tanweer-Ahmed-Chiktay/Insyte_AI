@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
+import { TextToSpeechClient } from '@google-cloud/text-to-speech'
 
 // Force dynamic rendering for this route
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 export const revalidate = 0
 
-const LMNT_API_KEY = process.env.LMNT_API_KEY
-const VOICE_ID = 'ryan' // LMNT Ryan voice
+// Initialize Google Cloud Text-to-Speech client
+const ttsClient = new TextToSpeechClient({
+  projectId: process.env.GOOGLE_CLOUD_PROJECT_ID,
+  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
+})
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,14 +23,14 @@ export async function POST(request: NextRequest) {
     //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     // }
 
-    const { text, useLMNT = true } = await request.json()
+    const { text, useGoogleTTS = true } = await request.json()
 
     if (!text) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 })
     }
 
-    // Use LMNT by default, fallback to browser TTS if not requested
-    if (!useLMNT || !LMNT_API_KEY) {
+    // Use Google TTS by default, fallback to browser TTS if not requested or not configured
+    if (!useGoogleTTS || !process.env.GOOGLE_CLOUD_PROJECT_ID) {
       return NextResponse.json({ 
         useBrowserTTS: true, 
         text,
@@ -35,53 +39,44 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      // Call LMNT API
-      const response = await fetch('https://api.lmnt.com/v1/ai/speech/bytes', {
-        method: 'POST',
-        headers: {
-          'Accept': 'audio/wav',
-          'Content-Type': 'application/json',
-          'X-API-Key': LMNT_API_KEY
+      // Construct the request for Google Cloud Text-to-Speech
+      const synthesizeRequest = {
+        input: { text },
+        voice: {
+          languageCode: 'en-US',
+          name: 'en-US-Chirp3-HD-Rasalgethi', // High-definition Chirp voice
+          ssmlGender: 'MALE' as const
         },
-        body: JSON.stringify({
-          text,
-          voice: VOICE_ID,
-          format: 'wav',
-          sample_rate: 24000,
-          model: 'blizzard'
-        })
-      })
-
-      // Handle rate limiting specifically
-      if (response.status === 429) {
-        console.log('LMNT rate limit reached, falling back to browser TTS')
-        return NextResponse.json({ 
-          useBrowserTTS: true, 
-          text,
-          message: 'LMNT rate limit reached, using browser TTS'
-        })
+        audioConfig: {
+          audioEncoding: 'MP3' as const,
+          sampleRateHertz: 24000
+        }
       }
 
-      if (!response.ok) {
-        throw new Error(`LMNT API error: ${response.status}`)
+      // Call Google Cloud Text-to-Speech API
+      const [response] = await ttsClient.synthesizeSpeech(synthesizeRequest)
+      
+      if (!response.audioContent) {
+        throw new Error('No audio content received from Google TTS')
       }
 
-      const audioBuffer = await response.arrayBuffer()
+      // Convert the audio content to buffer
+      const audioBuffer = Buffer.from(response.audioContent)
       
       return new NextResponse(audioBuffer, {
         headers: {
-          'Content-Type': 'audio/wav',
-          'Content-Length': audioBuffer.byteLength.toString()
+          'Content-Type': 'audio/mpeg',
+          'Content-Length': audioBuffer.length.toString()
         }
       })
-    } catch (lmntError) {
-      console.error('LMNT API error:', lmntError)
+    } catch (googleTTSError) {
+      console.error('Google TTS API error:', googleTTSError)
       
-      // Fallback to browser TTS on any LMNT error
+      // Fallback to browser TTS on any Google TTS error
       return NextResponse.json({ 
         useBrowserTTS: true, 
         text,
-        message: 'LMNT unavailable, using browser TTS'
+        message: 'Google TTS unavailable, using browser TTS'
       })
     }
   } catch (error) {

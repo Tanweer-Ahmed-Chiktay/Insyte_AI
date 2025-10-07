@@ -21,22 +21,18 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // Get user's account from database
-  const account = await prisma.account.findFirst({
-    where: {
-      user: {
-        email: session.user.email
-      },
-      provider: 'google'
-    },
-    select: {
-      id: true,
-      provider: true,
-      access_token: true,
-      refresh_token: true,
-      expires_at: true
-    }
-  }) as (Pick<Account, 'id' | 'provider' | 'access_token' | 'refresh_token' | 'expires_at'>) | null
+    // Get access token from session (JWT strategy)
+    const accessToken = (session as any).accessToken
+    const refreshToken = (session as any).refreshToken
+    
+    // Create account-like object for compatibility
+    const account = accessToken ? {
+      id: 'jwt-session',
+      provider: 'google',
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: null // JWT handles expiration internally
+    } : null
 
     const user = await prisma.user.findUnique({
     where: {

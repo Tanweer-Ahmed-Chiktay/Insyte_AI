@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getToken } from 'next-auth/jwt'
+import { getServerSession } from 'next-auth/next'
+import { authOptions } from '@/lib/auth'
 import { google } from 'googleapis'
 
 export const runtime = "nodejs"
@@ -59,25 +60,17 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  let token = null
+  let session = null
   
   try {
-    // Cast request to any for Next.js 14+ compatibility
-    token = await getToken({ 
-      req: request as any, 
-      secret: process.env.NEXTAUTH_SECRET 
-    })
+    session = await getServerSession(authOptions)
     
-    if (!token) {
-      return NextResponse.json({ error: 'No token found' }, { status: 401 })
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    if (!token.accessToken) {
-      return NextResponse.json({ error: 'No access token' }, { status: 401 })
-    }
-
-    if (!token.refreshToken) {
-      return NextResponse.json({ error: 'No refresh token' }, { status: 401 })
+    if (!session.accessToken) {
+      return NextResponse.json({ error: 'No access token available' }, { status: 401 })
     }
 
     // Set up OAuth2 client
@@ -88,8 +81,8 @@ export async function GET(
     )
 
     oauth2Client.setCredentials({
-      access_token: token.accessToken as string,
-      refresh_token: token.refreshToken as string,
+      access_token: session.accessToken,
+      refresh_token: session.refreshToken
     })
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
@@ -139,7 +132,7 @@ export async function GET(
     console.error('Error details:', {
       message: error instanceof Error ? error.message : 'Unknown error',
       status: (error as any)?.response?.status || (error as any)?.status || (error as any)?.code,
-      hasRefreshToken: !!token?.refreshToken
+      hasRefreshToken: !!session?.refreshToken
     })
     
     // Check for 401 errors
@@ -150,19 +143,9 @@ export async function GET(
       (error instanceof Error && error.message.includes('401'))
     )
     
-    if (is401Error && token?.refreshToken) {
-      console.log('Token expired, NextAuth will handle refresh automatically on next request')
+    if (is401Error) {
       return NextResponse.json({ 
-        error: 'Authentication expired', 
-        message: 'Please refresh the page or sign in again',
-        requiresReauth: true 
-      }, { status: 401 })
-    } else if (is401Error) {
-      console.log('No refresh token available, user needs to re-authenticate')
-      return NextResponse.json({ 
-        error: 'Authentication expired', 
-        message: 'Please sign out and sign in again',
-        requiresReauth: true 
+        error: 'Authentication expired. Please sign in again.' 
       }, { status: 401 })
     }
     

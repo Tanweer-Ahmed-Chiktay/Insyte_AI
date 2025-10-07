@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
     // Get email content from database (cached)
   const cachedEmail = await prisma.email.findFirst({
     where: {
-      gmailId: emailId,
+      externalId: emailId,
       userId: user.id
     }
   }) as any

@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getToken } from 'next-auth/jwt'
+import { getServerSession } from 'next-auth/next'
+import { authOptions } from '@/lib/auth'
+
 import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
 import { truncateText } from '@/lib/utils'
 // Removed prisma-wrapper - using prisma directly
 
 export const runtime = "nodejs"
-// Enable caching with revalidation
-export const dynamic = 'auto'
+// Force dynamic rendering for this API route
+export const dynamic = 'force-dynamic'
 export const revalidate = 300 // 5 minutes cache
 
 // Helper function to categorize emails based on Gmail labels
@@ -139,7 +141,7 @@ async function getCachedEmails(userId: string, userEmail: string, category: stri
 
     // Transform database emails to API format
     return cachedEmails.map(email => ({
-      id: email.gmailId,
+      id: email.externalId,
       subject: email.subject,
       from: email.from,
       snippet: truncateText(email.snippet || '', 100),
@@ -186,38 +188,46 @@ export async function GET(request: NextRequest) {
     const cookies = request.headers.get('cookie')
     console.log('Request cookies:', cookies)
     
-    // Get JWT token which contains access and refresh tokens
-    // Cast request to any for Next.js 14+ compatibility
-    token = await getToken({ 
-      req: request as any, 
-      secret: process.env.NEXTAUTH_SECRET 
+    // Get session which contains user information
+    const session = await getServerSession(authOptions)
+    
+    console.log('Session check:', {
+      hasSession: !!session,
+      userEmail: session?.user?.email,
+      userId: session?.user?.id
     })
     
-    console.log('Token check:', {
-      hasToken: !!token,
-      userEmail: token?.email,
-      hasAccessToken: !!token?.accessToken,
-      hasRefreshToken: !!token?.refreshToken
-    })
-    
-    if (!token?.email) {
-      console.error('No token or user email found')
+    if (!session?.user?.email) {
+      console.error('No session or user email found')
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    if (!token?.accessToken) {
-      console.error('No access token found for user')
-      return NextResponse.json({ error: 'No access token found' }, { status: 401 })
-    }
-    
-    // Check if we have a refresh token - if not, user needs to re-authenticate
-    if (!token?.refreshToken) {
-      console.error('No refresh token found - user needs to re-authenticate')
+    // Get user's Gmail access token from database
+    const account = await prisma.account.findFirst({
+      where: {
+        userId: session.user.id,
+        provider: 'google'
+      }
+    })
+
+    if (!account?.access_token) {
+      console.error('No access token found in database')
       return NextResponse.json({ 
-        error: 'Authentication expired', 
-        message: 'Please sign out and sign in again to refresh your Gmail access',
+        error: 'Gmail account not connected', 
+        message: 'Please sign out and sign in again to connect your Gmail account',
         requiresReauth: true 
       }, { status: 401 })
+    }
+    
+    const accessToken = account.access_token
+    const refreshToken = account.refresh_token
+    
+    // Create token object for compatibility with existing code
+    token = {
+      email: session.user.email,
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+      sub: session.user.id
     }
 
     // Ensure user exists in database
@@ -233,6 +243,26 @@ export async function GET(request: NextRequest) {
         image: token.picture || null
       }
     }) as any
+
+    // Ensure Gmail email provider exists for this user
+    const emailProvider = await prisma.emailProvider.upsert({
+      where: {
+        userId_provider_email: {
+          userId: user.id,
+          provider: 'gmail',
+          email: user.email
+        }
+      },
+      update: {
+        isActive: true
+      },
+      create: {
+        userId: user.id,
+        provider: 'gmail',
+        email: user.email,
+        isActive: true
+      }
+    })
 
     // Calculate date ranges for 60-day system
     const now = new Date()
@@ -333,30 +363,55 @@ export async function GET(request: NextRequest) {
         let emails: any[] = []
         
         if (emailList.data.messages && emailList.data.messages.length > 0) {
-          // Process new emails
+          // Use batch processing to reduce API calls and avoid rate limits
+          const { getBatchProcessor } = await import('@/lib/gmail-batch-processor')
+          const batchProcessor = getBatchProcessor(token.accessToken as string)
+          
+          const messagesToProcess = emailList.data.messages.slice(0, 20)
+          const messageIds = messagesToProcess.map(msg => msg.id!)
+          
+          // Check which emails already exist to avoid duplicates
+          const existingEmails = await prisma.email.findMany({
+            where: {
+              externalId: { in: messageIds },
+              userId: user.id
+            },
+            select: { externalId: true }
+          })
+          
+          const existingIds = new Set(existingEmails.map(e => e.externalId))
+          const newMessageIds = messageIds.filter(id => !existingIds.has(id))
+          
+          console.log(`Processing ${newMessageIds.length} new emails out of ${messageIds.length} total`)
+          
+          if (newMessageIds.length === 0) {
+            return NextResponse.json({ 
+              emails: [], 
+              totalCount: 0, 
+              newEmailsCount: 0,
+              message: 'No new emails to process'
+            })
+          }
+          
+          // Batch fetch email details
+          const batchResults = await batchProcessor.fetchMessagesBatch(newMessageIds, 'full')
+          
+          // Process batch results
           emails = await Promise.all(
-            emailList.data.messages.slice(0, 20).map(async (message) => {
+            batchResults.map(async (result) => {
               try {
-                const existingEmail = await prisma.email.findUnique({
-                  where: { gmailId: message.id! }
-                })
-                
-                if (existingEmail) {
-                  console.log(`Email ${message.id} already exists, skipping`)
-                  return null // Skip if already exists
+                if (!result.success || !result.data) {
+                  console.warn(`Failed to fetch message ${result.messageId}:`, result.error)
+                  return null
                 }
                 
-                const emailDetail = await gmail.users.messages.get({
-                  userId: 'me',
-                  id: message.id!,
-                  format: 'full'
-                })
+                const emailDetail = { data: result.data }
                 
                 const headers = emailDetail.data.payload?.headers || []
-                const subject = headers.find(h => h.name === 'Subject')?.value || 'No Subject'
-                const from = headers.find(h => h.name === 'From')?.value || 'Unknown Sender'
-                const to = headers.find(h => h.name === 'To')?.value || ''
-                const dateHeader = headers.find(h => h.name === 'Date')?.value || new Date().toISOString()
+                const subject = headers.find((h: any) => h.name === 'Subject')?.value || 'No Subject'
+                const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown Sender'
+                const to = headers.find((h: any) => h.name === 'To')?.value || ''
+                const dateHeader = headers.find((h: any) => h.name === 'Date')?.value || new Date().toISOString()
                 console.log('Gmail date header:', dateHeader)
                 
                 // Parse the date more robustly
@@ -381,7 +436,7 @@ export async function GET(request: NextRequest) {
                   content = Buffer.from(emailDetail.data.payload.body.data, 'base64').toString('utf-8')
                 } else if (emailDetail.data.payload?.parts) {
                   // Handle multipart emails
-                  const textPart = emailDetail.data.payload.parts.find(part => part.mimeType === 'text/plain')
+                  const textPart = emailDetail.data.payload.parts.find((part: any) => part.mimeType === 'text/plain')
                   if (textPart?.body?.data) {
                     content = Buffer.from(textPart.body.data, 'base64').toString('utf-8')
                   }
@@ -406,9 +461,12 @@ export async function GET(request: NextRequest) {
 
                 // Cache email in database with proper categorization
                 await prisma.email.upsert({
-                  where: {
-                    gmailId: message.id!
-                  },
+                    where: {
+                      providerId_externalId: {
+                        providerId: emailProvider.id,
+                        externalId: result.messageId
+                      }
+                    },
                   update: {
                     subject,
                     from,
@@ -425,8 +483,9 @@ export async function GET(request: NextRequest) {
                     receivedAt: parsedDate
                   },
                   create: {
-                    gmailId: message.id!,
-                    userId: user.id,
+                    externalId: result.messageId,
+                    user: { connect: { id: user.id } },
+                    provider: { connect: { id: emailProvider.id } },
                     threadId: emailDetail.data.threadId || '',
                     subject,
                     from,
@@ -456,7 +515,7 @@ export async function GET(request: NextRequest) {
                 const displayFrom = isSelfSent && labels.includes('INBOX') ? 'Me' : from
                 
                 return {
-                  id: message.id!,
+                  id: result.messageId,
                   subject,
                   from: displayFrom,
                   snippet: truncateText(snippet, 100),
@@ -470,7 +529,7 @@ export async function GET(request: NextRequest) {
                   category: categorizeEmail(labels, isSelfSent)
                 }
               } catch (error) {
-                console.error(`Error processing email ${message.id}:`, error)
+                console.error(`Error processing email ${result.messageId}:`, error)
                 return null
               }
             })
@@ -642,8 +701,11 @@ export async function GET(request: NextRequest) {
         emailList.data.messages.slice(0, 20).map(async (message) => {
           try {
             // Check if email already exists in database
-            const existingEmail = await prisma.email.findUnique({
-              where: { gmailId: message.id! }
+            const existingEmail = await prisma.email.findFirst({
+              where: {
+                providerId: emailProvider.id,
+                externalId: message.id!
+              }
             })
 
             if (existingEmail && !forceRefresh) {
@@ -698,7 +760,10 @@ export async function GET(request: NextRequest) {
             // Cache email in database with proper categorization
             await prisma.email.upsert({
               where: {
-                gmailId: message.id!
+                providerId_externalId: {
+                  providerId: emailProvider.id,
+                  externalId: message.id!
+                }
               },
               update: {
                 subject,
@@ -716,8 +781,9 @@ export async function GET(request: NextRequest) {
                 receivedAt: new Date(date)
               },
               create: {
-                gmailId: message.id!,
-                userId: user.id,
+                  externalId: message.id!,
+                  user: { connect: { id: user.id } },
+                  provider: { connect: { id: emailProvider.id } },
                 threadId: emailDetail.data.threadId || '',
                 subject,
                 from,
@@ -940,7 +1006,7 @@ async function generateSummariesInBackground(emails: any[], userId: string) {
 }
 
 // Internal function to generate email summary
-async function generateEmailSummary(gmailId: string, userId: string) {
+async function generateEmailSummary(externalId: string, userId: string) {
   try {
     if (!process.env.GROQ_API_KEY) {
       throw new Error('GROQ_API_KEY not configured')
@@ -949,7 +1015,7 @@ async function generateEmailSummary(gmailId: string, userId: string) {
     // Get email from database using Gmail ID
   const cachedEmail = await prisma.email.findFirst({
     where: {
-      gmailId: gmailId,
+      externalId: externalId,
       userId: userId
     }
   }) as any
@@ -1035,10 +1101,10 @@ async function generateEmailSummary(gmailId: string, userId: string) {
     }
   })
 
-    console.log(`Generated summary for email ${gmailId}`)
+    console.log(`Generated summary for email ${externalId}`)
     return emailSummary
   } catch (error) {
-    console.error(`Error generating summary for email ${gmailId}:`, error)
+    console.error(`Error generating summary for email ${externalId}:`, error)
     throw error
   }
 }

@@ -105,47 +105,7 @@ export function PaneManager({ emails, onEmailSelect, children }: PaneManagerProp
     }
   }, [])
 
-  const handlePaneDrop = useCallback(async (e: React.DragEvent, paneId: string) => {
-    e.preventDefault()
-    dragCounter.current = 0
-    setDragOverPane(null)
-    
-    if (!draggedEmail) return
-
-    const targetPane = panes.find(p => p.id === paneId)
-    if (!targetPane) return
-
-    // If there's only one pane, always split to create a new pane
-    if (panes.length === 1) {
-      splitPane(paneId, draggedEmail)
-    } else {
-      // If there are multiple panes, load the email into the target pane
-      setPanes(prev => prev.map(p => 
-        p.id === paneId 
-          ? { ...p, email: draggedEmail, isLoading: true }
-          : p
-      ))
-      
-      try {
-        const fullEmail = await onEmailSelect(draggedEmail)
-        setPanes(prev => prev.map(p => 
-          p.id === paneId 
-            ? { ...p, fullEmail, isLoading: false }
-            : p
-        ))
-      } catch (error) {
-        setPanes(prev => prev.map(p => 
-          p.id === paneId 
-            ? { ...p, email: null, isLoading: false }
-            : p
-        ))
-      }
-    }
-    
-    setDraggedEmail(null)
-  }, [draggedEmail, panes, onEmailSelect])
-
-  const splitPane = useCallback(async (paneId: string, email?: Email) => {
+  const splitPane = useCallback(async (paneId: string, email?: Email) => {    
     const paneIndex = panes.findIndex(p => p.id === paneId)
     if (paneIndex === -1) return
 
@@ -186,6 +146,63 @@ export function PaneManager({ emails, onEmailSelect, children }: PaneManagerProp
       }
     }
   }, [panes, onEmailSelect])
+
+  const handlePaneDrop = useCallback(async (e: React.DragEvent, paneId: string) => {
+    e.preventDefault()
+    dragCounter.current = 0
+    setDragOverPane(null)
+    
+    // Get email from either draggedEmail state or dataTransfer
+    let emailToDrop = draggedEmail
+    
+    // If no draggedEmail state, try to get email ID from dataTransfer
+    if (!emailToDrop) {
+      const emailId = e.dataTransfer.getData('text/plain')
+      if (emailId) {
+        emailToDrop = emails.find(email => email.id === emailId) || null
+      }
+    }
+    
+    if (!emailToDrop) {
+      console.log('No email to drop found')
+      return
+    }
+
+    console.log('Dropping email:', emailToDrop.id, emailToDrop.subject, 'into pane:', paneId)
+    
+    const targetPane = panes.find(p => p.id === paneId)
+    if (!targetPane) return
+
+    // If there's only one pane, always split to create a new pane
+    if (panes.length === 1) {
+      splitPane(paneId, emailToDrop)
+    } else {
+      // If there are multiple panes, load the email into the target pane
+      setPanes(prev => prev.map(p => 
+        p.id === paneId 
+          ? { ...p, email: emailToDrop, isLoading: true }
+          : p
+      ))
+      
+      try {
+        const fullEmail = await onEmailSelect(emailToDrop)
+        setPanes(prev => prev.map(p => 
+          p.id === paneId 
+            ? { ...p, fullEmail, isLoading: false }
+            : p
+        ))
+      } catch (error) {
+        console.error('Error loading email into pane:', error)
+        setPanes(prev => prev.map(p => 
+          p.id === paneId 
+            ? { ...p, email: null, isLoading: false }
+            : p
+        ))
+      }
+    }
+    
+    setDraggedEmail(null)
+  }, [draggedEmail, panes, onEmailSelect, splitPane, emails])
 
   const closePane = useCallback((paneId: string) => {
     if (panes.length <= 1) return // Don't close the last pane

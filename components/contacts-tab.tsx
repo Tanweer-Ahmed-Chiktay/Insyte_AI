@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/components/ui/use-toast'
+import { createCSRFHeaders } from '@/lib/utils/csrf-client'
 
 interface Contact {
   id: string
@@ -51,6 +52,7 @@ export function ContactsTab({ onSendEmailToContact }: ContactsTabProps) {
   // Load contacts on component mount
   useEffect(() => {
     loadContacts()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const loadContacts = async () => {
@@ -86,11 +88,10 @@ export function ContactsTab({ onSendEmailToContact }: ContactsTabProps) {
         return
       }
 
+      const headers = await createCSRFHeaders()
       const response = await fetch('/api/contacts', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers,
         body: JSON.stringify(formData)
       })
 
@@ -128,11 +129,10 @@ export function ContactsTab({ onSendEmailToContact }: ContactsTabProps) {
         return
       }
 
+      const headers = await createCSRFHeaders()
       const response = await fetch('/api/contacts', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers,
         body: JSON.stringify({ id: editingContact.id, ...formData })
       })
 
@@ -161,8 +161,10 @@ export function ContactsTab({ onSendEmailToContact }: ContactsTabProps) {
 
   const handleDeleteContact = async (contactId: string) => {
     try {
+      const headers = await createCSRFHeaders()
       const response = await fetch(`/api/contacts?id=${contactId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers
       })
 
       if (response.ok) {

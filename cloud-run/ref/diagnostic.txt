@@ -1,0 +1,367 @@
+#!/usr/bin/env node
+
+/**
+ * Gmail Worker Diagnostic Script
+ * Run this script to diagnose OAuth and database issues
+ */
+
+const { PrismaClient } = require('@prisma/client');
+const { google } = require('googleapis');
+const crypto = require('crypto');
+
+// Environment validation
+function validateEnvironment() {
+  console.log('🔍 Validating Environment Variables...\n');
+  
+  const required = [
+    'DATABASE_URL',
+    'GOOGLE_CLIENT_ID', 
+    'GOOGLE_CLIENT_SECRET',
+    'GOOGLE_CLOUD_PROJECT_ID'
+  ];
+  
+  const missing = required.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    console.error('❌ Missing required environment variables:');
+    missing.forEach(key => console.error(`   - ${key}`));
+    return false;
+  }
+  
+  console.log('✅ All required environment variables present\n');
+  
+  // Check optional variables
+  const optional = ['ENCRYPTION_KEY', 'PUSHER_SECRET', 'NEXTAUTH_URL'];
+  optional.forEach(key => {
+    console.log(`${process.env[key] ? '✅' : '⚠️'} ${key}: ${process.env[key] ? 'Present' : 'Missing (optional)'}`);
+  });
+  
+  return true;
+}
+
+// Database connectivity test
+async function testDatabase() {
+  console.log('\n🔍 Testing Database Connection...\n');
+  
+  let prisma;
+  try {
+    prisma = new PrismaClient({
+      log: ['error']
+    });
+    
+    // Test connection
+    await prisma.$queryRaw`SELECT 1 as test`;
+    console.log('✅ Database connection successful');
+    
+    // Check tables exist
+    const tables = ['users', 'accounts', 'sessions'];
+    for (const table of tables) {
+      try {
+        const result = await prisma.$queryRawUnsafe(`SELECT COUNT(*) as count FROM ${table}`);
+        console.log(`✅ Table '${table}': ${result[0].count} records`);
+      } catch (error) {
+        console.log(`❌ Table '${table}': ${error.message}`);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Database connection failed:', error.message);
+    return false;
+  } finally {
+    if (prisma) {
+      await prisma.$disconnect();
+    }
+  }
+}
+
+// OAuth token validation
+async function testOAuthTokens(userId = null) {
+  console.log('\n🔍 Testing OAuth Tokens...\n');
+  
+  let prisma;
+  try {
+    prisma = new PrismaClient();
+    
+    // Find user accounts with Google OAuth
+    const accounts = await prisma.account.findMany({
+      where: {
+        provider: 'google',
+        ...(userId && { userId })
+      },
+      select: {
+        userId: true,
+        access_token: true,
+        refresh_token: true,
+        expires_at: true,
+        user: {
+          select: {
+            email: true
+          }
+        }
+      },
+      take: 5 // Limit for testing
+    });
+    
+    if (accounts.length === 0) {
+      console.log('⚠️ No Google OAuth accounts found');
+      return false;
+    }
+    
+    console.log(`Found ${accounts.length} Google OAuth accounts\n`);
+    
+    for (const account of accounts) {
+      console.log(`Testing tokens for user: ${account.user.email}`);
+      
+      // Check if tokens exist
+      if (!account.access_token || !account.refresh_token) {
+        console.log('❌ Missing access_token or refresh_token');
+        continue;
+      }
+      
+      // Try to decrypt tokens
+      let accessToken, refreshToken;
+      try {
+        accessToken = decrypt(account.access_token);
+        refreshToken = decrypt(account.refresh_token);
+        console.log('✅ Tokens decrypted successfully');
+      } catch (error) {
+        console.log('❌ Token decryption failed:', error.message);
+        continue;
+      }
+      
+      // Test OAuth client
+      try {
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.NEXTAUTH_URL
+        );
+        
+        oauth2Client.setCredentials({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+        
+        // Test API call
+        const profile = await gmail.users.getProfile({ userId: 'me' });
+        console.log(`✅ Gmail API test successful for ${profile.data.emailAddress}`);
+        
+      } catch (error) {
+        console.log(`❌ Gmail API test failed: ${error.message}`);
+        
+        if (error.code === 401) {
+          console.log('   - Token may be expired or invalid');
+        } else if (error.message?.includes('invalid_request')) {
+          console.log('   - OAuth client configuration issue');
+        }
+      }
+      
+      console.log(''); // Empty line for readability
+    }
+    
+    return true;
+    
+  } catch (error) {
+    console.error('❌ OAuth token test failed:', error.message);
+    return false;
+  } finally {
+    if (prisma) {
+      await prisma.$disconnect();
+    }
+  }
+}
+
+// Encryption/Decryption test
+function decrypt(encryptedData) {
+  if (!encryptedData || typeof encryptedData !== 'string') {
+    throw new Error('Invalid encrypted data: must be a non-empty string');
+  }
+  
+  const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+  
+  if (!ENCRYPTION_KEY) {
+    // Return as-is if no encryption key (assume unencrypted)
+    return encryptedData;
+  }
+  
+  const parts = encryptedData.split(':');
+  
+  // Try new format first: encrypted:iv:tag (AES-256-GCM)
+  if (parts.length === 3) {
+    try {
+      const [encrypted, iv, tag] = parts;
+      const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'base64'), Buffer.from(iv, 'hex'));
+      decipher.setAuthTag(Buffer.from(tag, 'hex'));
+      
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } catch (error) {
+      console.log('Failed to decrypt with new format, trying old format');
+    }
+  }
+  
+  // Fallback to old format: iv:encrypted (AES-256-CBC)
+  if (parts.length === 2) {
+    try {
+      const [iv, encrypted] = parts;
+      const decipher = crypto.createDecipher('aes-256-cbc', ENCRYPTION_KEY);
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } catch (error) {
+      console.log('Failed to decrypt with old format');
+    }
+  }
+  
+  // If only 1 part, assume it's plain text
+  if (parts.length === 1) {
+    return encryptedData;
+  }
+  
+  throw new Error(`Invalid encrypted data format: expected "encrypted:iv:tag", "iv:encrypted", or plain text, got ${parts.length} parts`);
+}
+
+// Pub/Sub connectivity test
+async function testPubSub() {
+  console.log('\n🔍 Testing Pub/Sub Configuration...\n');
+  
+  try {
+    const { PubSub } = require('@google-cloud/pubsub');
+    
+    if (!process.env.GOOGLE_CLOUD_PROJECT_ID) {
+      console.log('❌ GOOGLE_CLOUD_PROJECT_ID not set');
+      return false;
+    }
+    
+    const pubsub = new PubSub({
+      projectId: process.env.GOOGLE_CLOUD_PROJECT_ID
+    });
+    
+    // List topics to test connectivity
+    const [topics] = await pubsub.getTopics();
+    console.log(`✅ Pub/Sub connected, found ${topics.length} topics`);
+    
+    // Look for Gmail-related topics
+    const gmailTopics = topics.filter(topic => 
+      topic.name.includes('gmail') || topic.name.includes('MyTopic')
+    );
+    
+    if (gmailTopics.length > 0) {
+      console.log('✅ Found Gmail-related topics:');
+      gmailTopics.forEach(topic => console.log(`   - ${topic.name}`));
+    } else {
+      console.log('⚠️ No Gmail-related topics found');
+    }
+    
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Pub/Sub test failed:', error.message);
+    return false;
+  }
+}
+
+// Pusher connectivity test
+async function testPusher() {
+  console.log('\n🔍 Testing Pusher Configuration...\n');
+  
+  try {
+    const Pusher = require('pusher');
+    
+    const required = ['PUSHER_APP_ID', 'PUSHER_KEY', 'PUSHER_SECRET', 'PUSHER_CLUSTER'];
+    const missing = required.filter(key => !process.env[key]);
+    
+    if (missing.length > 0) {
+      console.log('❌ Missing Pusher configuration:', missing.join(', '));
+      return false;
+    }
+    
+    const pusher = new Pusher({
+      appId: process.env.PUSHER_APP_ID,
+      key: process.env.PUSHER_KEY,
+      secret: process.env.PUSHER_SECRET,
+      cluster: process.env.PUSHER_CLUSTER,
+      useTLS: true
+    });
+    
+    // Test trigger (this will send a test event)
+    await pusher.trigger('test-channel', 'test-event', { message: 'Diagnostic test' });
+    console.log('✅ Pusher connection successful');
+    
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Pusher test failed:', error.message);
+    return false;
+  }
+}
+
+// Generate diagnostic report
+async function generateReport() {
+  console.log('🏥 Gmail Worker Diagnostic Report');
+  console.log('='.repeat(50));
+  
+  const results = {
+    environment: false,
+    database: false,
+    oauth: false,
+    pubsub: false,
+    pusher: false
+  };
+  
+  // Run all tests
+  results.environment = validateEnvironment();
+  
+  if (results.environment) {
+    results.database = await testDatabase();
+    results.oauth = await testOAuthTokens();
+    results.pubsub = await testPubSub();
+    results.pusher = await testPusher();
+  }
+  
+  // Summary
+  console.log('\n📋 Diagnostic Summary');
+  console.log('='.repeat(25));
+  Object.entries(results).forEach(([test, passed]) => {
+    console.log(`${passed ? '✅' : '❌'} ${test.toUpperCase()}: ${passed ? 'PASS' : 'FAIL'}`);
+  });
+  
+  const overallPass = Object.values(results).every(Boolean);
+  console.log(`\n🎯 Overall Status: ${overallPass ? '✅ HEALTHY' : '❌ NEEDS ATTENTION'}`);
+  
+  // Recommendations
+  if (!overallPass) {
+    console.log('\n💡 Recommendations:');
+    
+    if (!results.environment) {
+      console.log('   - Set missing environment variables');
+    }
+    
+    if (!results.database) {
+      console.log('   - Check database connectivity and schema');
+      console.log('   - Run: npx prisma db push');
+    }
+    
+    if (!results.oauth) {
+      console.log('   - Users may need to re-authenticate via OAuth');
+      console.log('   - Check GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET');
+      console.log('   - Verify token encryption/decryption');
+    }
+    
+    if (!results.pubsub) {
+      console.log('   - Verify Google Cloud project and permissions');
+      console.log('   - Check service account has Pub/Sub access');
+    }
+    
+    if (!results.pusher) {
+      console.log('   - Verify Pusher credentials');
+      console.log('   - Check Pusher app configuration');
+    }
+  }
+  
+  console.log('\n🔧 Next Steps:');
+  console.log('   1. Fix any failing tests

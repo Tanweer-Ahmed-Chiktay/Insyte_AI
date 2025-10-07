@@ -15,7 +15,7 @@ import {
   List,
   ListOrdered,
   Link,
-  Image,
+  Image as ImageIcon,
   Table,
   Palette,
   Type,
@@ -558,7 +558,7 @@ export function RichTextEditor({
             onClick={() => imageInputRef.current?.click()}
             className="h-8 w-8 p-0"
           >
-            <Image className="h-4 w-4" />
+            <ImageIcon className="h-4 w-4" />
           </Button>
           
           <Button
@@ -584,6 +584,10 @@ export function RichTextEditor({
       {/* Editor */}
       <div
         ref={editorRef}
+        role="textbox"
+        aria-multiline="true"
+        aria-label="Rich text editor"
+        // eslint-disable-next-line react/no-danger
         contentEditable
         className={cn(
           "min-h-[300px] max-h-[500px] overflow-y-auto p-4 focus:outline-none prose prose-sm max-w-none bg-white border rounded-md transition-colors",

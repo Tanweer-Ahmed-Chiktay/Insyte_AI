@@ -1,0 +1,180 @@
+# cloudbuild.yaml - Build and deploy configuration
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/gmail-worker:$BUILD_ID'
+      - '.'
+
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/gmail-worker:$BUILD_ID'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'gmail-worker'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/gmail-worker:$BUILD_ID'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '3600'
+      - '--concurrency'
+      - '80'
+      - '--max-instances'
+      - '10'
+      - '--set-env-vars'
+      - 'NODE_ENV=production'
+      - '--update-secrets'
+      - 'DATABASE_URL=DATABASE_URL:latest'
+      - '--update-secrets'
+      - 'GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest'
+      - '--update-secrets'
+      - 'PUSHER_SECRET=PUSHER_SECRET:latest'
+      - '--update-secrets'
+      - 'ENCRYPTION_KEY=ENCRYPTION_KEY:latest'
+
+---
+# Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY prisma ./prisma/
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Generate Prisma client
+RUN npx prisma generate
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S worker -u 1001
+
+# Change ownership of app directory
+RUN chown -R worker:nodejs /app
+USER worker
+
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["node", "server.js"]
+
+---
+# service.yaml - Cloud Run service configuration
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: gmail-worker
+  labels:
+    cloud.googleapis.com/location: us-central1
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/execution-environment: gen2
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/execution-environment: gen2
+        autoscaling.knative.dev/maxScale: "10"
+        autoscaling.knative.dev/minScale: "1"
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 3600
+      serviceAccountName: gmail-worker-sa@insyte-467414.iam.gserviceaccount.com
+      containers:
+      - image: gcr.io/insyte-467414/gmail-worker:latest
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+          requests:
+            cpu: "1"
+            memory: "1Gi"
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "8080"
+        - name: GOOGLE_CLOUD_PROJECT_ID
+          value: "insyte-467414"
+        - name: NEXTAUTH_URL
+          value: "https://your-app.vercel.app"
+        - name: GOOGLE_CLIENT_ID
+          value: "602910049439-k30jcc9lnfdi3v456m0s5e6uds35iosh.apps.googleusercontent.com"
+        - name: PUSHER_APP_ID
+          value: "1932969"
+        - name: PUSHER_KEY
+          value: "b8b8b8b8b8b8b8b8b8b8"
+        - name: PUSHER_CLUSTER
+          value: "us3"
+        # Secrets mounted as volumes
+        volumeMounts:
+        - name: database-url
+          mountPath: /etc/secrets/DATABASE_URL
+          readOnly: true
+        - name: google-client-secret
+          mountPath: /etc/secrets/GOOGLE_CLIENT_SECRET
+          readOnly: true
+        - name: pusher-secret
+          mountPath: /etc/secrets/PUSHER_SECRET
+          readOnly: true
+        - name: encryption-key
+          mountPath: /etc/secrets/ENCRYPTION_KEY
+          readOnly: true
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: database-url
+        secret:
+          secretName: database-url
+      - name: google-client-secret
+        secret:
+          secretName: google-client-secret
+      - name: pusher-secret
+        secret:
+          secretName: pusher-secret
+      - name: encryption-key
+        secret:
+          secretName: encryption-key

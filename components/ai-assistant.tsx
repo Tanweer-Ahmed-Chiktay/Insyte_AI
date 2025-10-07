@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { VoiceOverlay } from './voice-overlay'
 import { useVoiceAssistant } from '@/hooks/use-voice-assistant'
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts'
+import { createCSRFHeaders } from '@/lib/utils/csrf-client'
 
 interface Message {
   id: string
@@ -296,9 +297,10 @@ export function AIAssistant() {
     setIsLoading(true)
     
     try {
+      const headers = await createCSRFHeaders()
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ 
           message: messageText,
           includeVoice: true,
@@ -312,6 +314,7 @@ export function AIAssistant() {
         throw new Error(data.error || 'Failed to send message')
       }
       
+      console.log('🎙️ Voice-only mode: Assistant response received:', data.response)
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -324,15 +327,19 @@ export function AIAssistant() {
       conversationHistoryRef.current = [...conversationHistoryRef.current, assistantMessage]
       
       // Play voice response immediately
+      console.log('🎙️ Voice-only mode: Audio URL:', data.audioUrl)
       if (data.audioUrl) {
         if (data.audioUrl === 'USE_BROWSER_TTS') {
           // Use browser speech synthesis as fallback
+          console.log('🎙️ Voice-only mode: Using browser TTS fallback')
           await synthesizeAndPlay(data.response)
         } else {
+          console.log('🎙️ Voice-only mode: Playing audio from URL:', data.audioUrl)
           await playAudio(data.audioUrl)
         }
       } else {
         // Fallback: synthesize speech if no audio provided
+        console.log('🎙️ Voice-only mode: Fallback - synthesizing speech')
         await synthesizeAndPlay(data.response)
       }
       
@@ -378,9 +385,10 @@ export function AIAssistant() {
     setIsLoading(true)
     
     try {
+      const headers = await createCSRFHeaders()
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ 
           message: textToSend,
           includeVoice: isVoiceEnabled,
@@ -394,6 +402,7 @@ export function AIAssistant() {
         throw new Error(data.error || 'Failed to send message')
       }
       
+      console.log('🤖 Regular mode: Assistant response received:', data.response)
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -404,13 +413,16 @@ export function AIAssistant() {
       setMessages(prev => [...prev, assistantMessage])
       conversationHistoryRef.current = [...conversationHistoryRef.current, assistantMessage]
       
-      // Play voice response if available and enabled
-      if (isVoiceEnabled && data.audioUrl) {
-        if (data.audioUrl === 'USE_BROWSER_TTS') {
-          // Use browser speech synthesis as fallback
-          await synthesizeAndPlay(data.response)
-        } else {
+      // Play voice response if voice is enabled
+      console.log('🤖 Regular mode: Voice enabled:', isVoiceEnabled, 'Audio URL:', data.audioUrl)
+      if (isVoiceEnabled) {
+        if (data.audioUrl && data.audioUrl !== 'USE_BROWSER_TTS') {
+          console.log('🤖 Regular mode: Playing audio from URL:', data.audioUrl)
           await playAudio(data.audioUrl)
+        } else {
+          // Use voice synthesis API or browser TTS as fallback
+          console.log('🤖 Regular mode: Using voice synthesis for response')
+          await synthesizeAndPlay(data.response)
         }
       }
       
@@ -431,22 +443,28 @@ export function AIAssistant() {
 
   // Enhanced speech synthesis with automatic fallback
   const synthesizeAndPlay = async (text: string) => {
+    console.log('🎵 synthesizeAndPlay called with text:', text)
     try {
+      const headers = await createCSRFHeaders()
+      console.log('🎵 Making request to /api/voice/synthesize with headers:', headers)
       const response = await fetch('/api/voice/synthesize', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ text })
       })
+      console.log('🎵 Voice synthesis response status:', response.status, response.statusText)
       
       if (response.ok) {
         const contentType = response.headers.get('content-type')
+        console.log('🎵 Response content-type:', contentType)
         
         // Check if response is JSON (browser TTS fallback)
         if (contentType?.includes('application/json')) {
           const data = await response.json()
+          console.log('🎵 JSON response data:', data)
           
           if (data.useBrowserTTS) {
-            console.log('Using browser TTS:', data.message)
+            console.log('🎵 Using browser TTS:', data.message)
             
             // Use browser speech synthesis with enhanced fallback
             if ('speechSynthesis' in window) {
@@ -497,11 +515,15 @@ export function AIAssistant() {
             }
           }
         } else {
-          // Handle audio blob response (ElevenLabs)
+          // Handle audio blob response (Google TTS)
+          console.log('🎵 Received audio blob response, size:', response.headers.get('content-length'))
           const audioBlob = await response.blob()
+          console.log('🎵 Audio blob created, size:', audioBlob.size, 'type:', audioBlob.type)
           const audioUrl = URL.createObjectURL(audioBlob)
+          console.log('🎵 Audio URL created:', audioUrl)
           await playAudio(audioUrl)
           URL.revokeObjectURL(audioUrl)
+          console.log('🎵 Audio playback completed')
           return
         }
       }
@@ -694,7 +716,7 @@ export function AIAssistant() {
               <h2 className="text-2xl font-bold mb-2">Voice Assistant</h2>
               <p className="text-muted-foreground text-lg mb-4">
                 {voiceState.isSpeaking 
-                  ? "I'm speaking..." 
+                  ? "Im speaking..." 
                   : voiceState.isListening 
                     ? voiceState.isVoiceDetected 
                       ? "I hear you..." 
@@ -714,7 +736,7 @@ export function AIAssistant() {
             
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Speak naturally - I'll respond automatically like a phone call
+                Speak naturally - I apos;ll respond automatically like a phone call
               </p>
               
               <Button
@@ -761,11 +783,11 @@ export function AIAssistant() {
                   
                   <div className="text-sm text-muted-foreground space-y-1">
                     <p>Try asking:</p>
-                    <p>• "Summarize my recent emails"</p>
-                    <p>• "Help me write a professional email"</p>
-                    <p>• "What are my most important messages?"</p>
-                    <p>• "Search for latest news about AI"</p>
-                    <p>• "What's the weather like today?"</p>
+                    <p>• &quot;Summarize my recent emails&quot;</p>
+                    <p>• &quot;Help me write a professional email&quot;</p>
+                    <p>• &quot;What are my most important messages?&quot;</p>
+                    <p>• &quot;Search for latest news about AI&quot;</p>
+                    <p>• &quot;What&apos;s the weather like today?&quot;</p>
                   </div>
                 </div>
               ) : (

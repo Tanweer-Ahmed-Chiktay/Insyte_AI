@@ -33,19 +33,20 @@ export const TimePickerWheel = forwardRef<TimePickerWheelRef, TimePickerWheelPro
   const [lastHapticValue, setLastHapticValue] = useState<number | null>(null)
   const itemHeight = 40 // Height of each item in pixels
 
-  // Generate values array
-  const values: number[] = []
-  for (let i = min; i <= max; i += step) {
-    values.push(i)
-  }
+  // Generate values array (memoized)
+  const values: number[] = React.useMemo(() => {
+    const arr: number[] = []
+    for (let i = min; i <= max; i += step) arr.push(i)
+    return arr
+  }, [min, max, step])
 
   // Create infinite scrolling array with more padding for seamless wrapping
   const paddingCount = Math.max(5, Math.ceil(values.length / 2))
-  const paddedValues = [
+  const paddedValues = React.useMemo(() => [
     ...Array(paddingCount).fill(null).map((_, i) => values[values.length - paddingCount + i]),
     ...values,
     ...Array(paddingCount).fill(null).map((_, i) => values[i])
-  ]
+  ], [values, paddingCount])
 
   const triggerHapticFeedback = useCallback((force = false) => {
     if (navigator.vibrate) {
