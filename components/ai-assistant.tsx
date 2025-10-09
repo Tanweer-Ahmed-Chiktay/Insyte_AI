@@ -453,6 +453,13 @@ export function AIAssistant() {
         body: JSON.stringify({ text })
       })
       console.log('🎵 Voice synthesis response status:', response.status, response.statusText)
+      // Surface which provider the server used (if any)
+      const voiceProvider = response.headers.get('x-voice-provider')
+      if (voiceProvider) {
+        console.log('🎵 Voice provider used by server:', voiceProvider)
+      } else {
+        console.log('🎵 No X-Voice-Provider header; may be browser TTS fallback')
+      }
       
       if (response.ok) {
         const contentType = response.headers.get('content-type')

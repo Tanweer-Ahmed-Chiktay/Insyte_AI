@@ -632,9 +632,20 @@ export function useVoiceAssistant({
       console.log('🔊 Processing audio URL, starts with data:', audioUrl.startsWith('data:audio/'))
       if (audioUrl.startsWith('data:audio/')) {
         try {
-          console.log('🔊 Converting data URL to blob')
-          const response = await fetch(audioUrl)
-          const blob = await response.blob()
+          console.log('🔊 Converting data URL to blob without network fetch')
+          const dataUrlToBlob = (dataUrl: string): Blob => {
+            const [header, base64] = dataUrl.split(',')
+            const match = header.match(/data:(.*?);base64/)
+            const mime = match ? match[1] : 'application/octet-stream'
+            const binary = atob(base64)
+            const len = binary.length
+            const bytes = new Uint8Array(len)
+            for (let i = 0; i < len; i++) {
+              bytes[i] = binary.charCodeAt(i)
+            }
+            return new Blob([bytes], { type: mime })
+          }
+          const blob = dataUrlToBlob(audioUrl)
           audioSrc = URL.createObjectURL(blob)
           console.log('🔊 Created blob URL:', audioSrc)
         } catch (error) {

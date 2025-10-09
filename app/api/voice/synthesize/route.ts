@@ -23,62 +23,90 @@ export async function POST(request: NextRequest) {
     //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     // }
 
-    const { text, useGoogleTTS = true } = await request.json()
+    const { text } = await request.json()
 
     if (!text) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 })
     }
 
-    // Use Google TTS by default, fallback to browser TTS if not requested or not configured
-    if (!useGoogleTTS || !process.env.GOOGLE_CLOUD_PROJECT_ID) {
-      return NextResponse.json({ 
-        useBrowserTTS: true, 
-        text,
-        message: 'Using browser TTS'
-      })
+    // Try ElevenLabs first (default)
+    const elevenApiKey = process.env.ELEVENLABS_API_KEY
+    const elevenVoiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM' // Rachel
+
+    if (elevenApiKey) {
+      try {
+        const elevenUrl = `https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`
+        const elevenResp = await fetch(elevenUrl, {
+          method: 'POST',
+          headers: {
+            'xi-api-key': elevenApiKey,
+            'Content-Type': 'application/json',
+            'Accept': 'audio/mpeg'
+          },
+          body: JSON.stringify({ text })
+        })
+
+        if (elevenResp.ok) {
+          const arrayBuf = await elevenResp.arrayBuffer()
+          const audioBuffer = Buffer.from(arrayBuf)
+          return new NextResponse(audioBuffer, {
+            headers: {
+              'Content-Type': 'audio/mpeg',
+              'Content-Length': audioBuffer.length.toString(),
+              'X-Voice-Provider': 'elevenlabs'
+            }
+          })
+        } else {
+          // 402: payment required, 429: rate limit
+          console.error('ElevenLabs TTS error:', elevenResp.status, elevenResp.statusText)
+        }
+      } catch (err) {
+        console.error('ElevenLabs TTS fetch failed:', err)
+      }
     }
 
-    try {
-      // Construct the request for Google Cloud Text-to-Speech
-      const synthesizeRequest = {
-        input: { text },
-        voice: {
-          languageCode: 'en-US',
-          name: 'en-US-Chirp3-HD-Rasalgethi', // High-definition Chirp voice
-          ssmlGender: 'MALE' as const
-        },
-        audioConfig: {
-          audioEncoding: 'MP3' as const,
-          sampleRateHertz: 24000
+    // Fallback to Google TTS if configured
+    if (process.env.GOOGLE_CLOUD_PROJECT_ID) {
+      try {
+        // Construct the request for Google Cloud Text-to-Speech
+        const synthesizeRequest = {
+          input: { text },
+          voice: {
+            languageCode: 'en-US',
+            name: 'en-US-Chirp3-HD-Rasalgethi',
+            ssmlGender: 'MALE' as const
+          },
+          audioConfig: {
+            audioEncoding: 'MP3' as const,
+            sampleRateHertz: 24000
+          }
         }
-      }
 
-      // Call Google Cloud Text-to-Speech API
-      const [response] = await ttsClient.synthesizeSpeech(synthesizeRequest)
-      
-      if (!response.audioContent) {
-        throw new Error('No audio content received from Google TTS')
-      }
-
-      // Convert the audio content to buffer
-      const audioBuffer = Buffer.from(response.audioContent)
-      
-      return new NextResponse(audioBuffer, {
-        headers: {
-          'Content-Type': 'audio/mpeg',
-          'Content-Length': audioBuffer.length.toString()
+        const [response] = await ttsClient.synthesizeSpeech(synthesizeRequest)
+        if (!response.audioContent) {
+          throw new Error('No audio content received from Google TTS')
         }
-      })
-    } catch (googleTTSError) {
-      console.error('Google TTS API error:', googleTTSError)
-      
-      // Fallback to browser TTS on any Google TTS error
-      return NextResponse.json({ 
-        useBrowserTTS: true, 
-        text,
-        message: 'Google TTS unavailable, using browser TTS'
-      })
+
+        const audioBuffer = Buffer.from(response.audioContent)
+        return new NextResponse(audioBuffer, {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Content-Length': audioBuffer.length.toString(),
+            'X-Voice-Provider': 'google-tts'
+          }
+        })
+      } catch (googleTTSError) {
+        console.error('Google TTS API error:', googleTTSError)
+      }
     }
+
+    // Final fallback: ask client to use browser TTS
+    return NextResponse.json({ 
+      useBrowserTTS: true, 
+      text,
+      message: 'Using browser TTS',
+      provider: 'browser-tts'
+    })
   } catch (error) {
     console.error('Error synthesizing speech:', error)
     return NextResponse.json(

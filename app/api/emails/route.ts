@@ -175,6 +175,8 @@ export async function GET(request: NextRequest) {
   let token: any = null
   
   try {
+    console.log('=== EMAIL API REQUEST START ===')
+    
     // Get query parameters for incremental fetching
     const { searchParams } = request.nextUrl
     const since = searchParams.get('since') // ISO date string for incremental fetching
@@ -184,51 +186,61 @@ export async function GET(request: NextRequest) {
     const olderThan = searchParams.get('olderThan') // New parameter for pagination
     const refreshOnly = searchParams.get('refreshOnly') === 'true' // New parameter for refresh button
     
+    console.log('Request params:', { since, maxResults, category, forceRefresh, olderThan, refreshOnly })
+    
     // Debug: Check cookies
     const cookies = request.headers.get('cookie')
-    console.log('Request cookies:', cookies)
+    console.log('Request cookies present:', !!cookies)
+    console.log('Cookie names:', cookies?.split(';').map(c => c.trim().split('=')[0]).join(', '))
     
     // Get session which contains user information
+    console.log('Getting session...')
     const session = await getServerSession(authOptions)
     
     console.log('Session check:', {
       hasSession: !!session,
       userEmail: session?.user?.email,
-      userId: session?.user?.id
+      userId: session?.user?.id,
+      hasAccessToken: !!session?.accessToken,
+      hasRefreshToken: !!session?.refreshToken,
+      accessTokenType: typeof session?.accessToken,
+      refreshTokenType: typeof session?.refreshToken
     })
     
-    if (!session?.user?.email) {
-      console.error('No session or user email found')
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+  if (!session?.user?.email) {
+    console.error('No session or user email found')
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
 
-    // Get user's Gmail access token from database
-    const account = await prisma.account.findFirst({
-      where: {
-        userId: session.user.id,
-        provider: 'google'
-      }
-    })
+  // Validate required Google OAuth environment variables early
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    console.error('Missing Google OAuth env: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET')
+    return NextResponse.json(
+      {
+        error: 'Server misconfiguration: Google OAuth client not set',
+        message: 'Ensure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are defined and dev server restarted.'
+      },
+      { status: 500 }
+    )
+  }
 
-    if (!account?.access_token) {
-      console.error('No access token found in database')
-      return NextResponse.json({ 
-        error: 'Gmail account not connected', 
-        message: 'Please sign out and sign in again to connect your Gmail account',
-        requiresReauth: true 
-      }, { status: 401 })
-    }
-    
-    const accessToken = account.access_token
-    const refreshToken = account.refresh_token
-    
-    // Create token object for compatibility with existing code
-    token = {
-      email: session.user.email,
-      accessToken: accessToken,
-      refreshToken: refreshToken,
-      sub: session.user.id
-    }
+  // Use tokens from NextAuth session (which handles automatic refresh)
+  if (!session.accessToken) {
+    console.error('No access token found in session')
+    return NextResponse.json({ 
+      error: 'Gmail account not connected', 
+      message: 'Please sign out and sign in again to connect your Gmail account',
+      requiresReauth: true 
+    }, { status: 401 })
+  }
+  
+  // Create token object using session tokens (which are automatically refreshed by NextAuth)
+  token = {
+    email: session.user.email,
+    accessToken: session.accessToken,
+    refreshToken: session.refreshToken,
+    sub: session.user.id
+  }
 
     // Ensure user exists in database
     const user = await prisma.user.upsert({
@@ -353,13 +365,40 @@ export async function GET(request: NextRequest) {
         
         console.log(`Fetching new emails with query: ${query}`)
         
-        const emailList = await gmail.users.messages.list({
-          userId: 'me',
-          q: query,
-          maxResults: maxResults
-        })
+        let emailList: any
+        try {
+          emailList = await gmail.users.messages.list({
+            userId: 'me',
+            q: query,
+            maxResults: maxResults
+          })
+    } catch (error: any) {
+      console.error('Gmail API list (refresh-only) failed:', {
+        message: error?.message,
+        code: error?.code,
+        status: error?.status,
+        statusText: error?.statusText,
+        response: error?.response?.data,
+        config: error?.config ? {
+          url: error.config.url,
+          method: error.config.method,
+          params: error.config.params
+        } : undefined,
+        fullError: error
+      })
+      return NextResponse.json(
+        { 
+          error: 'Gmail API list failed', 
+          message: error?.message,
+          code: error?.code,
+          status: error?.status,
+          details: error?.response?.data
+        },
+        { status: 500 }
+      )
+    }
         
-        let newEmailsCount = 0
+    let newEmailsCount = 0
         let emails: any[] = []
         
         if (emailList.data.messages && emailList.data.messages.length > 0) {
@@ -683,12 +722,105 @@ export async function GET(request: NextRequest) {
     
     console.log('Gmail query:', query)
     
-    // Get email list from Gmail
-    const emailList = await gmail.users.messages.list({
-      userId: 'me',
-      maxResults,
-      q: query
-    })
+    // Get email list from Gmail with explicit token refresh and enhanced error handling
+    let emailList: any
+    try {
+      // First, try to refresh the access token if needed
+      try {
+        await oauth2Client.getAccessToken()
+      } catch (tokenError: any) {
+        console.error('Token refresh failed:', {
+          message: tokenError?.message,
+          code: tokenError?.code,
+          status: tokenError?.status
+        })
+        return NextResponse.json(
+          { 
+            error: 'OAuth token refresh failed', 
+            message: tokenError?.message,
+            code: tokenError?.code
+          },
+          { status: 401 }
+        )
+      }
+
+      // Make the Gmail API call using direct fetch for better error handling
+      const accessToken = oauth2Client.credentials.access_token
+      if (!accessToken) {
+        console.error('No access token available after refresh')
+        return NextResponse.json(
+          { error: 'No access token available' },
+          { status: 401 }
+        )
+      }
+
+      const gmailUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&q=${encodeURIComponent(query)}`
+      console.log('Making Gmail API request to:', gmailUrl)
+      
+      const gmailResponse = await fetch(gmailUrl, {
+        headers: { 
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!gmailResponse.ok) {
+        const errorText = await gmailResponse.text()
+        console.error('Gmail API failed:', {
+          status: gmailResponse.status,
+          statusText: gmailResponse.statusText,
+          url: gmailUrl,
+          headers: gmailResponse.headers,
+          body: errorText
+        })
+        
+        // Try to parse error response
+        let errorData
+        try {
+          errorData = JSON.parse(errorText)
+        } catch {
+          errorData = { message: errorText }
+        }
+        
+        return NextResponse.json(
+          { 
+            error: `Gmail API list failed with ${gmailResponse.status}`,
+            message: errorData?.error?.message || errorText,
+            status: gmailResponse.status,
+            details: errorData
+          },
+          { status: 500 }
+        )
+      }
+
+      const gmailData = await gmailResponse.json()
+      emailList = { data: gmailData }
+      
+    } catch (error: any) {
+      console.error('Gmail API list failed:', {
+        message: error?.message,
+        code: error?.code,
+        status: error?.status,
+        statusText: error?.statusText,
+        response: error?.response?.data,
+        config: error?.config ? {
+          url: error.config.url,
+          method: error.config.method,
+          params: error.config.params
+        } : undefined,
+        fullError: error
+      })
+      return NextResponse.json(
+        { 
+          error: 'Gmail API list failed', 
+          message: error?.message,
+          code: error?.code,
+          status: error?.status,
+          details: error?.response?.data
+        },
+        { status: 500 }
+      )
+    }
 
     let newEmails: any[] = []
     let newEmailsCount = 0
@@ -963,8 +1095,14 @@ export async function GET(request: NextRequest) {
       }, { status: 401 })
     }
     
+    const status = (error as any)?.response?.status || (error as any)?.status || (error as any)?.code
+    const message = error instanceof Error ? error.message : String(error)
     return NextResponse.json(
-      { error: 'Failed to fetch emails' },
+      {
+        error: 'Failed to fetch emails',
+        message,
+        status
+      },
       { status: 500 }
     )
   }
@@ -974,6 +1112,11 @@ export async function GET(request: NextRequest) {
 async function generateSummariesInBackground(emails: any[], userId: string) {
   try {
     console.log(`Generating summaries for ${emails.length} emails in background`)
+    // If Groq isn't configured, skip background summary generation entirely
+    if (!process.env.GROQ_API_KEY) {
+      console.warn('GROQ_API_KEY not configured; skipping background summary generation')
+      return
+    }
     
     // Process emails in batches to avoid overwhelming the API
     const batchSize = 3
@@ -1041,6 +1184,9 @@ async function generateEmailSummary(externalId: string, userId: string) {
       apiKey: process.env.GROQ_API_KEY
     })
 
+    // Use a supported Groq model, configurable via env, with a safe default
+    const groqModel = process.env.GROQ_MODEL || 'llama-3.1-8b-instant'
+
     // Generate AI summary using Groq
     const completion = await groq.chat.completions.create({
       messages: [
@@ -1053,7 +1199,7 @@ async function generateEmailSummary(externalId: string, userId: string) {
           content: `Please summarize this email:\n\nSubject: ${cachedEmail.subject}\nFrom: ${cachedEmail.from}\n\nContent:\n${cachedEmail.content}`
         }
       ],
-      model: 'llama3-8b-8192',
+      model: groqModel,
       temperature: 0.3,
       max_tokens: 200
     })
@@ -1072,7 +1218,7 @@ async function generateEmailSummary(externalId: string, userId: string) {
           content: `Email content:\n${cachedEmail.content}`
         }
       ],
-      model: 'llama3-8b-8192',
+      model: groqModel,
       temperature: 0.1,
       max_tokens: 300
     })

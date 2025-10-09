@@ -113,7 +113,7 @@ export async function middleware(request: NextRequest) {
         "img-src 'self' data: https:",
         "font-src 'self' https://fonts.gstatic.com data:",
         "connect-src 'self' https: wss:",
-        "media-src 'self' blob:",
+        "media-src 'self' blob: data: https:",
         "frame-ancestors 'none'",
         "object-src 'none'",
         "base-uri 'self'",
@@ -125,7 +125,7 @@ export async function middleware(request: NextRequest) {
         "img-src 'self' data: https:",
         "font-src 'self' https://fonts.gstatic.com data:",
         "connect-src 'self' https: ws: wss:",
-        "media-src 'self' blob:",
+        "media-src 'self' blob: data: https:",
         "frame-ancestors 'none'",
         "object-src 'none'",
         "base-uri 'self'",
@@ -166,10 +166,18 @@ export async function middleware(request: NextRequest) {
       try {
         // Check for NextAuth JWT token in cookies (JWT session strategy)
         // Note: We only check for presence here, actual validation happens in the API route
-        const jwtTokenName = process.env.NODE_ENV === 'production' 
-          ? '__Secure-next-auth.session-token' 
-          : 'next-auth.session-token';
-        const jwtToken = request.cookies.get(jwtTokenName)?.value;
+        // Support both default NextAuth cookie name and the app's custom "-v2" name
+        const cookieCandidateNames = [
+          process.env.NODE_ENV === 'production'
+            ? '__Secure-next-auth.session-token'
+            : 'next-auth.session-token',
+          process.env.NODE_ENV === 'production'
+            ? '__Secure-next-auth.session-token-v2'
+            : 'next-auth.session-token-v2',
+        ];
+        const jwtToken = cookieCandidateNames
+          .map((name) => request.cookies.get(name)?.value)
+          .find(Boolean);
         
         if (!jwtToken) {
           return NextResponse.json(

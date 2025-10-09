@@ -18,7 +18,23 @@ interface EmailResponse {
 const fetcher = async (url: string): Promise<EmailResponse> => {
   const response = await fetch(url)
   if (!response.ok) {
-    throw new Error('Failed to fetch emails')
+    // Surface more detail to help diagnose 4xx/5xx responses
+    let detail = ''
+    try {
+      const contentType = response.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
+        const json = await response.json().catch(() => null)
+        if (json && (json.error || json.message)) {
+          detail = `: ${json.error || json.message}`
+        }
+      } else {
+        const text = await response.text()
+        if (text) {
+          detail = `: ${text.slice(0, 300)}`
+        }
+      }
+    } catch {}
+    throw new Error(`Failed to fetch emails (${response.status})${detail}`)
   }
   return response.json()
 }

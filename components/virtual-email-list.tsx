@@ -70,14 +70,17 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        "mx-3 my-2 p-3 rounded-lg border-2 cursor-pointer transition-all duration-200 ease-in-out",
-        "bg-white dark:bg-card hover:shadow-md",
+        "mx-2 my-[2px] p-2 rounded-md border cursor-pointer transition-all duration-150 ease-in-out h-12",
+        "bg-white dark:bg-card hover:shadow-sm",
         email.id === selectedEmailId
-          ? "border-blue-500 shadow-md ring-2 ring-blue-200"
+          ? "border-blue-500 ring-2 ring-blue-200"
           : "border-blue-200 hover:border-blue-300",
-        !email.isRead && "border-blue-400 shadow-sm",
-        isDragging && "shadow-xl z-50 border-blue-600 opacity-50"
+        !email.isRead && "border-blue-400",
+        isDragging && "shadow-md z-50 border-blue-600 opacity-50"
       )}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
       onClick={() => {
         console.log('Email row clicked:', email.id, email.subject)
         onEmailSelect(email)
@@ -86,13 +89,10 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
       whileTap={{ scale: isDragging ? 1 : 0.98 }}
       transition={{ duration: 0.15 }}
     >
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-1">
         <div className="flex items-center space-x-3 min-w-0 flex-1">
           <div 
-            draggable
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+            className="cursor-grab active:cursor-grabbing p-[2px] hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
           >
             <GripVertical className="h-4 w-4 text-muted-foreground" />
           </div>
@@ -115,7 +115,7 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
       
       <div>
         <div className={cn(
-          "text-sm text-foreground mb-1 truncate leading-tight",
+          "text-sm text-foreground mb-[2px] truncate leading-tight",
           !email.isRead ? "font-semibold" : "font-medium"
         )}>
           {email.subject || '(No Subject)'}
@@ -167,7 +167,7 @@ export const VirtualEmailList: React.FC<VirtualEmailListProps> = ({
             height={height}
             width={width}
             itemCount={emails.length}
-            itemSize={100} // Height of each email item with margins
+            itemSize={52} // Compact row height (h-12 = 48) + margins (~4px)
             itemData={itemData}
             overscanCount={5} // Render 5 extra items for smooth scrolling
           >

@@ -343,9 +343,22 @@ export function EmailPane({
                               ({(attachment.size / 1024).toFixed(1)} KB)
                             </span>
                           </div>
-                          <Button variant="outline" size="sm">
-                            Download
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            <a
+                              href={`/api/emails/${email.id}/attachments/${attachment.attachmentId}?mode=inline&filename=${encodeURIComponent(attachment.filename)}&mimeType=${encodeURIComponent(attachment.mimeType)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm px-2 py-1 rounded border hover:bg-muted"
+                            >
+                              Preview
+                            </a>
+                            <a
+                              href={`/api/emails/${email.id}/attachments/${attachment.attachmentId}?mode=attachment&filename=${encodeURIComponent(attachment.filename)}&mimeType=${encodeURIComponent(attachment.mimeType)}`}
+                              className="text-sm px-2 py-1 rounded border hover:bg-muted"
+                            >
+                              Download
+                            </a>
+                          </div>
                         </div>
                       ))}
                     </div>

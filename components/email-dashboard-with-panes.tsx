@@ -853,7 +853,7 @@ export default function EmailDashboardWithPanes() {
   }
   
   return (
-    <div className="h-screen flex bg-background">
+    <div className="h-screen flex bg-background overflow-hidden">
       {/* Sidebar */}
       <AnimatePresence>
         {(isSidebarOpen || isDesktop) && (
@@ -862,7 +862,7 @@ export default function EmailDashboardWithPanes() {
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: -300, opacity: 0 }}
             transition={{ duration: 0.3, ease: 'easeInOut' }}
-            className="w-64 bg-card border-r border-border flex flex-col fixed md:relative z-50 h-full"
+            className="w-64 bg-card border-r border-border flex flex-col fixed md:relative z-50 h-full overflow-y-auto"
           >
             {/* Sidebar Header */}
             <div className="p-4 border-b border-border">
@@ -882,57 +882,10 @@ export default function EmailDashboardWithPanes() {
                   <X className="h-4 w-4" />
                 </Button>
               </div>
-              {/* Test Button */}
-              <Button 
-                onClick={async () => {
-                  try {
-                    console.log('[Test] Triggering Gmail push notification test')
-                    
-                    // Get CSRF token first
-                    const csrfResponse = await fetch('/api/csrf-token')
-                    const csrfData = await csrfResponse.json()
-                    
-                    if (!csrfData.csrfToken) {
-                      throw new Error('Failed to get CSRF token')
-                    }
-                    
-                    const response = await fetch('/api/test-gmail-push', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'x-csrf-token': csrfData.csrfToken
-                      },
-                      body: JSON.stringify({
-                        messageIds: [`test-msg-${Date.now()}`],
-                        count: 1
-                      })
-                    })
-                    
-                    const result = await response.json()
-                    console.log('[Test] Gmail push test result:', result)
-                    toast({
-                      title: 'Test Triggered',
-                      description: 'Gmail push notification test sent'
-                    })
-                  } catch (error) {
-                    console.error('[Test] Gmail push test failed:', error)
-                    toast({
-                      title: 'Test Failed',
-                      description: 'Failed to trigger test',
-                      variant: 'destructive'
-                    })
-                  }
-                }}
-                size="sm"
-                variant="outline"
-                className="mt-2 w-full text-xs"
-              >
-                Test Gmail Push
-              </Button>
             </div>
             
             {/* Navigation */}
-            <nav className="flex-1 p-4 space-y-2">
+            <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
               {[
                 { id: 'inbox', label: 'Inbox', icon: Mail, count: emailStats.unread },
                 { id: 'starred', label: 'Starred', icon: Star, count: emailStats.starred },

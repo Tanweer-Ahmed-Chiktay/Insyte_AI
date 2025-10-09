@@ -12,7 +12,7 @@ interface UseEmailPollingOptions {
 export function useEmailPolling(options: UseEmailPollingOptions = {}) {
   const { data: session } = useSession()
   const {
-    enabled = true,
+    enabled = false,
     interval = 86400000, // 24 hours
     onNewEmails,
     onError,
@@ -22,6 +22,7 @@ export function useEmailPolling(options: UseEmailPollingOptions = {}) {
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
   const lastCheckRef = useRef<string | null>(null)
   const isPollingRef = useRef(false)
+  const hasStartedRef = useRef(false)
 
   const log = useCallback((message: string, ...args: any[]) => {
     if (debug) {
@@ -105,16 +106,10 @@ export function useEmailPolling(options: UseEmailPollingOptions = {}) {
   }, [session, interval, onNewEmails, onError, log])
 
   const startPolling = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-    }
-
-    log(`Starting email polling every ${interval}ms`)
-    intervalRef.current = setInterval(checkForNewEmails, interval)
-    
-    // Do an initial check
-    checkForNewEmails()
-  }, [interval, checkForNewEmails, log])
+    // Polling disabled globally
+    log('Polling is disabled')
+    return
+  }, [log])
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
@@ -122,20 +117,17 @@ export function useEmailPolling(options: UseEmailPollingOptions = {}) {
       clearInterval(intervalRef.current)
       intervalRef.current = null
     }
+    hasStartedRef.current = false
   }, [log])
 
   // Start/stop polling based on enabled state and session
   useEffect(() => {
-    if (enabled && session?.user?.email) {
-      startPolling()
-    } else {
-      stopPolling()
-    }
-
+    // Ensure polling is fully stopped
+    stopPolling()
     return () => {
       stopPolling()
     }
-  }, [enabled, session?.user?.email, startPolling, stopPolling])
+  }, [stopPolling])
 
   // Cleanup on unmount
   useEffect(() => {
