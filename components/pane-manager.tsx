@@ -157,6 +157,16 @@ export function PaneManager({ emails, onEmailSelect, children }: PaneManagerProp
     
     // If no draggedEmail state, try to get email ID from dataTransfer
     if (!emailToDrop) {
+      // Try JSON payload first for robustness
+      const emailJson = e.dataTransfer.getData('application/json')
+      if (emailJson) {
+        try {
+          const parsed = JSON.parse(emailJson)
+          if (parsed && parsed.id) {
+            emailToDrop = emails.find(email => email.id === parsed.id) || parsed
+          }
+        } catch {}
+      }
       const emailId = e.dataTransfer.getData('text/plain')
       if (emailId) {
         emailToDrop = emails.find(email => email.id === emailId) || null
@@ -230,9 +240,13 @@ export function PaneManager({ emails, onEmailSelect, children }: PaneManagerProp
   }, [])
 
   const resetPanes = useCallback(() => {
-    const equalWidth = 100 / panes.length
-    setPanes(prev => prev.map(pane => ({ ...pane, width: equalWidth })))
-  }, [panes.length])
+    setPanes(prev => {
+      const equalWidth = 100 / prev.length
+      return prev.map(pane => ({ ...pane, width: equalWidth }))
+    })
+    // Ensure an active pane is set after reset
+    setActivePane(panes[0]?.id || 'main')
+  }, [panes])
 
   const updatePane = useCallback((paneId: string, updates: Partial<EmailPane>) => {
     setPanes(prev => prev.map(p => 

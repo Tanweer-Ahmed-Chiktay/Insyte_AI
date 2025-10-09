@@ -58,7 +58,7 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
   const handleDragStart = (e: React.DragEvent) => {
     setIsDragging(true)
     e.dataTransfer.setData('text/plain', email.id)
-    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.effectAllowed = 'copy'
   }
 
   const handleDragEnd = () => {
