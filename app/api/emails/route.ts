@@ -407,7 +407,7 @@ export async function GET(request: NextRequest) {
           const batchProcessor = getBatchProcessor(token.accessToken as string)
           
           const messagesToProcess = emailList.data.messages.slice(0, 20)
-          const messageIds = messagesToProcess.map(msg => msg.id!)
+          const messageIds = messagesToProcess.map((msg: { id?: string | null }) => msg.id!)
           
           // Check which emails already exist to avoid duplicates
           const existingEmails = await prisma.email.findMany({
@@ -419,7 +419,7 @@ export async function GET(request: NextRequest) {
           })
           
           const existingIds = new Set(existingEmails.map(e => e.externalId))
-          const newMessageIds = messageIds.filter(id => !existingIds.has(id))
+          const newMessageIds = messageIds.filter((id: string) => !existingIds.has(id))
           
           console.log(`Processing ${newMessageIds.length} new emails out of ${messageIds.length} total`)
           
@@ -830,7 +830,7 @@ export async function GET(request: NextRequest) {
       
       // Get detailed information for each email
       const emails = await Promise.all(
-        emailList.data.messages.slice(0, 20).map(async (message) => {
+        emailList.data.messages.slice(0, 20).map(async (message: { id?: string | null }) => {
           try {
             // Check if email already exists in database
             const existingEmail = await prisma.email.findFirst({

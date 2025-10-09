@@ -79,7 +79,7 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
         isDragging && "shadow-md z-50 border-blue-600 opacity-50"
       )}
       draggable
-      onDragStart={handleDragStart}
+      onDragStartCapture={handleDragStart}
       onDragEnd={handleDragEnd}
       onClick={() => {
         console.log('Email row clicked:', email.id, email.subject)
