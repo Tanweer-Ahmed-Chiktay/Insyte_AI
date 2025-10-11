@@ -76,6 +76,7 @@ export function AIAssistant() {
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(true)
   const [showVoiceOverlay, setShowVoiceOverlay] = useState(false)
   const [voiceOnlyMode, setVoiceOnlyMode] = useState(false)
+  const [ttsProvider, setTtsProvider] = useState<string>('')
   const conversationHistoryRef = useRef<Message[]>([])
   const lastTranscriptRef = useRef<string>('')
   const isProcessingRef = useRef<boolean>(false)
@@ -307,6 +308,12 @@ export function AIAssistant() {
           conversationHistory: conversationHistoryRef.current.slice(-10) // Last 10 messages for context
         })
       })
+
+      // Capture TTS provider from server if present
+      const chatVoiceProvider = response.headers.get('x-voice-provider')
+      if (chatVoiceProvider) {
+        setTtsProvider(formatProviderName(chatVoiceProvider))
+      }
       
       const data = await response.json()
       
@@ -330,17 +337,18 @@ export function AIAssistant() {
       console.log('🎙️ Voice-only mode: Audio URL:', data.audioUrl)
       if (data.audioUrl) {
         if (data.audioUrl === 'USE_BROWSER_TTS') {
-          // Use browser speech synthesis as fallback
-          console.log('🎙️ Voice-only mode: Using browser TTS fallback')
-          await synthesizeAndPlay(data.response)
+          console.log('🎙️ Voice-only mode: Using browser TTS')
+          setTtsProvider(formatProviderName('browser'))
+          await speakWithBrowserTTS(data.response)
         } else {
           console.log('🎙️ Voice-only mode: Playing audio from URL:', data.audioUrl)
           await playAudio(data.audioUrl)
         }
       } else {
-        // Fallback: synthesize speech if no audio provided
-        console.log('🎙️ Voice-only mode: Fallback - synthesizing speech')
-        await synthesizeAndPlay(data.response)
+        // Fallback to browser TTS when no audioUrl
+        console.log('🎙️ Voice-only mode: No audio provided, falling back to browser TTS')
+        setTtsProvider(formatProviderName('browser'))
+        await speakWithBrowserTTS(data.response)
       }
       
     } catch (error: any) {
@@ -395,6 +403,12 @@ export function AIAssistant() {
           conversationHistory: conversationHistoryRef.current.slice(-10)
         })
       })
+
+      // Capture TTS provider from server if present
+      const chatVoiceProvider = response.headers.get('x-voice-provider')
+      if (chatVoiceProvider) {
+        setTtsProvider(formatProviderName(chatVoiceProvider))
+      }
       
       const data = await response.json()
       
@@ -416,13 +430,19 @@ export function AIAssistant() {
       // Play voice response if voice is enabled
       console.log('🤖 Regular mode: Voice enabled:', isVoiceEnabled, 'Audio URL:', data.audioUrl)
       if (isVoiceEnabled) {
-        if (data.audioUrl && data.audioUrl !== 'USE_BROWSER_TTS') {
-          console.log('🤖 Regular mode: Playing audio from URL:', data.audioUrl)
-          await playAudio(data.audioUrl)
+        if (data.audioUrl) {
+          if (data.audioUrl === 'USE_BROWSER_TTS') {
+            console.log('🤖 Regular mode: Using browser TTS')
+            setTtsProvider(formatProviderName('browser'))
+            await speakWithBrowserTTS(data.response)
+          } else {
+            console.log('🤖 Regular mode: Playing audio from URL:', data.audioUrl)
+            await playAudio(data.audioUrl)
+          }
         } else {
-          // Use voice synthesis API or browser TTS as fallback
-          console.log('🤖 Regular mode: Using voice synthesis for response')
-          await synthesizeAndPlay(data.response)
+          console.log('🤖 Regular mode: No audio provided, falling back to browser TTS')
+          setTtsProvider(formatProviderName('browser'))
+          await speakWithBrowserTTS(data.response)
         }
       }
       
@@ -457,6 +477,7 @@ export function AIAssistant() {
       const voiceProvider = response.headers.get('x-voice-provider')
       if (voiceProvider) {
         console.log('🎵 Voice provider used by server:', voiceProvider)
+        setTtsProvider(formatProviderName(voiceProvider))
       } else {
         console.log('🎵 No X-Voice-Provider header; may be browser TTS fallback')
       }
@@ -464,65 +485,17 @@ export function AIAssistant() {
       if (response.ok) {
         const contentType = response.headers.get('content-type')
         console.log('🎵 Response content-type:', contentType)
-        
-        // Check if response is JSON (browser TTS fallback)
+
         if (contentType?.includes('application/json')) {
-          const data = await response.json()
-          console.log('🎵 JSON response data:', data)
-          
-          if (data.useBrowserTTS) {
-            console.log('🎵 Using browser TTS:', data.message)
-            
-            // Use browser speech synthesis with enhanced fallback
-            if ('speechSynthesis' in window) {
-              const utterance = new SpeechSynthesisUtterance(data.text)
-              utterance.rate = 0.9
-              utterance.pitch = 1
-              utterance.volume = 0.8
-              
-              // Wait for voices to load if needed
-              const speakWithVoice = () => {
-                const voices = speechSynthesis.getVoices()
-                
-                // Enhanced voice selection for better quality
-                const preferredVoice = voices.find(voice => 
-                  voice.name.includes('Google') || 
-                  voice.name.includes('Microsoft') ||
-                  voice.name.includes('Alex') ||
-                  voice.name.includes('Samantha') ||
-                  voice.name.includes('Daniel') ||
-                  voice.name.includes('Karen') ||
-                  (voice.lang.startsWith('en') && voice.localService)
-                )
-                
-                if (preferredVoice) {
-                  utterance.voice = preferredVoice
-                }
-                
-                // Add error handling for speech synthesis
-                utterance.onerror = (event) => {
-                  console.error('Speech synthesis error:', event)
-                }
-                
-                speechSynthesis.speak(utterance)
-              }
-              
-              // If voices aren't loaded yet, wait for them
-              if (speechSynthesis.getVoices().length === 0) {
-                speechSynthesis.addEventListener('voiceschanged', speakWithVoice, { once: true })
-                // Fallback timeout in case voiceschanged doesn't fire
-                setTimeout(speakWithVoice, 100)
-              } else {
-                speakWithVoice()
-              }
-              
-              return
-            } else {
-              throw new Error('Browser speech synthesis not supported')
-            }
+          const json = await response.json()
+          if (json && json.useBrowserTTS && json.text) {
+            console.log('🎵 Using browser TTS with text from server')
+            setTtsProvider(formatProviderName('browser'))
+            await speakWithBrowserTTS(json.text)
+            return
           }
-        } else {
-          // Handle audio blob response (Google TTS)
+        } else if (contentType && contentType.startsWith('audio/')) {
+          // Handle audio blob response (Google or ElevenLabs)
           console.log('🎵 Received audio blob response, size:', response.headers.get('content-length'))
           const audioBlob = await response.blob()
           console.log('🎵 Audio blob created, size:', audioBlob.size, 'type:', audioBlob.type)
@@ -534,60 +507,53 @@ export function AIAssistant() {
           return
         }
       }
-      
+
       throw new Error('Speech synthesis failed')
     } catch (error) {
       console.error('Speech synthesis error:', error)
       
-      // Final fallback to browser speech synthesis
-      if ('speechSynthesis' in window) {
-        console.log('Using browser TTS as final fallback')
-        const utterance = new SpeechSynthesisUtterance(text)
-        utterance.rate = 0.9
-        utterance.pitch = 1
-        utterance.volume = 0.8
-        
-        // Enhanced voice selection for final fallback
-        const speakFallback = () => {
-          const voices = speechSynthesis.getVoices()
-          const preferredVoice = voices.find(voice => 
-            voice.name.includes('Google') || 
-            voice.name.includes('Microsoft') ||
-            voice.name.includes('Alex') ||
-            voice.name.includes('Samantha') ||
-            voice.name.includes('Daniel') ||
-            voice.name.includes('Karen') ||
-            (voice.lang.startsWith('en') && voice.localService)
-          )
-          
-          if (preferredVoice) {
-            utterance.voice = preferredVoice
-          }
-          
-          utterance.onerror = (event) => {
-            console.error('Final fallback speech synthesis error:', event)
-          }
-          
-          speechSynthesis.speak(utterance)
-        }
-        
-        if (speechSynthesis.getVoices().length === 0) {
-          speechSynthesis.addEventListener('voiceschanged', speakFallback, { once: true })
-          setTimeout(speakFallback, 100)
-        } else {
-          speakFallback()
-        }
-      } else {
-        // Defer toast to avoid render-time updates
-        setTimeout(() => {
-          toast({
-            title: 'Speech Unavailable',
-            description: 'Text-to-speech is not available in this browser.',
-            variant: 'destructive'
-          })
-        }, 0)
-      }
+      // Defer toast to indicate ElevenLabs-only and failure
+      setTimeout(() => {
+        toast({
+          title: 'Voice Unavailable',
+          description: 'Speech synthesis failed and browser TTS is disabled.',
+          variant: 'destructive'
+        })
+      }, 0)
     }
+  }
+
+  // Browser TTS speaking utility
+  const speakWithBrowserTTS = async (text: string) => {
+    return new Promise<void>((resolve, reject) => {
+      try {
+        if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+          reject(new Error('Browser TTS not supported'))
+          return
+        }
+        // Stop any ongoing speech
+        window.speechSynthesis.cancel()
+        const utterance = new SpeechSynthesisUtterance(text)
+        utterance.rate = 1.0
+        utterance.pitch = 1.0
+        utterance.lang = 'en-US'
+        utterance.onend = () => resolve()
+        utterance.onerror = () => reject(new Error('Browser TTS error'))
+        window.speechSynthesis.speak(utterance)
+      } catch (err) {
+        reject(err as Error)
+      }
+    })
+  }
+
+  // Helper to format provider names from header values
+  const formatProviderName = (raw: string) => {
+    const val = raw.trim().toLowerCase()
+    if (val.includes('eleven')) return 'ElevenLabs'
+    if (val.includes('google')) return 'Google TTS'
+    if (val.includes('lmnt')) return 'LMNT'
+    if (val.includes('browser')) return 'Browser'
+    return raw
   }
 
   // Enhanced error message handling
@@ -664,6 +630,13 @@ export function AIAssistant() {
           </div>
           
           <div className="flex items-center space-x-2">
+            {/* TTS Provider Indicator */}
+            {ttsProvider && (
+              <div className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-muted text-muted-foreground border border-border">
+                <span className="mr-1">TTS:</span>
+                <span className="font-medium">{ttsProvider}</span>
+              </div>
+            )}
             {/* Voice Toggle */}
             <Button
               variant="outline"

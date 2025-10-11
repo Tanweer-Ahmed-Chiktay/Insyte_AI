@@ -6,6 +6,49 @@ import { cn } from '@/lib/utils'
 import { Paperclip, GripVertical } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
+// Clean noisy headers and quoted blocks from Gmail-style snippets (conservative)
+const cleanSnippetText = (text: string): string => {
+  if (!text) return ''
+  let s = text.replace(/\s+/g, ' ').trim()
+
+  // Remove common forwarded/reply markers only if they appear at the start
+  s = s.replace(/^\s*-+\s*forwarded message\s*-+\s*/i, '')
+  s = s.replace(/^\s*on .*?wrote:\s*/i, '')
+
+  // Strip header tokens only when they appear at the start
+  s = s.replace(/^\s*(from|sent|subject|to):\s[^•\n]+/gi, '').trim()
+
+  // Remove quote markers at line starts but keep content
+  s = s.replace(/^>+\s*/gm, '')
+
+  return s.replace(/\s{2,}/g, ' ').trim()
+}
+
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Prefer summary, then snippet; strip duplicated subject prefix; fallback if too short
+const getDisplaySnippet = (subject?: string, summary?: string, snippet?: string): string => {
+  const base = (summary && summary.trim().length > 0) ? summary : (snippet || '')
+  let cleaned = cleanSnippetText(base)
+
+  if (subject && cleaned) {
+    const sub = subject.trim()
+    const pattern = new RegExp("^\\s*" + escapeRegex(sub) + "\\s*[:,\\-–—]*\\s*", 'i')
+    cleaned = cleaned.replace(pattern, '').trim()
+  }
+
+  if (!cleaned || cleaned.length < 10) {
+    let fallback = cleanSnippetText(snippet || '')
+    if (subject && fallback) {
+      const pattern = new RegExp("^\\s*" + escapeRegex(subject.trim()) + "\\s*[:,\\-–—]*\\s*", 'i')
+      fallback = fallback.replace(pattern, '').trim()
+    }
+    cleaned = fallback
+  }
+
+  return cleaned || (snippet || '')
+}
+
 export interface Email {
   id: string
   subject: string
@@ -70,12 +113,11 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        "mx-2 my-[2px] p-2 rounded-md border cursor-pointer transition-all duration-150 ease-in-out h-12",
+        "mx-0 my-1 px-4 py-3 rounded-md box-border border cursor-pointer transition-all duration-150 ease-in-out h-28 overflow-hidden",
         "bg-white dark:bg-card hover:shadow-sm",
         email.id === selectedEmailId
-          ? "border-blue-500 ring-2 ring-blue-200"
-          : "border-blue-200 hover:border-blue-300",
-        !email.isRead && "border-blue-400",
+          ? "border-[3px] border-blue-600"
+          : (!email.isRead ? "border-[2px] border-blue-500" : "border-slate-200 hover:border-slate-300"),
         isDragging && "shadow-md z-50 border-blue-600 opacity-50"
       )}
       draggable
@@ -115,13 +157,13 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
       
       <div>
         <div className={cn(
-          "text-sm text-foreground mb-[2px] truncate leading-tight",
+          "text-sm text-foreground mb-1 truncate leading-tight",
           !email.isRead ? "font-semibold" : "font-medium"
         )}>
           {email.subject || '(No Subject)'}
         </div>
-        <div className="text-xs text-muted-foreground truncate leading-tight">
-          {email.snippet}
+        <div className="text-sm text-muted-foreground truncate">
+          {getDisplaySnippet(email.subject, email.summary?.summary, email.snippet)}
         </div>
       </div>
     </motion.div>
@@ -163,16 +205,18 @@ export const VirtualEmailList: React.FC<VirtualEmailListProps> = ({
     <div className="h-full w-full">
       <AutoSizer>
         {({ height, width }) => (
-          <List
-            height={height}
-            width={width}
-            itemCount={emails.length}
-            itemSize={52} // Compact row height (h-12 = 48) + margins (~4px)
-            itemData={itemData}
-            overscanCount={5} // Render 5 extra items for smooth scrolling
-          >
-            {EmailRow}
-          </List>
+          <div className="relative z-10 bg-white dark:bg-background">
+            <List
+              height={height}
+              width={width}
+              itemCount={emails.length}
+              itemSize={120} // Row height (h-28 = 112) + vertical margin (~8px)
+              itemData={itemData}
+              overscanCount={5} // Render 5 extra items for smooth scrolling
+            >
+              {EmailRow}
+            </List>
+          </div>
         )}
       </AutoSizer>
     </div>

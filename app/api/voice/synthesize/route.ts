@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
+// Google TTS
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
 import { TextToSpeechClient } from '@google-cloud/text-to-speech'
 
 // Force dynamic rendering for this route
@@ -8,11 +11,19 @@ export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 export const revalidate = 0
 
-// Initialize Google Cloud Text-to-Speech client
-const ttsClient = new TextToSpeechClient({
-  projectId: process.env.GOOGLE_CLOUD_PROJECT_ID,
-  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
-})
+// Initialize Google Cloud Text-to-Speech if credentials are provided
+let ttsClient: any = null
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS || (process.env.GOOGLE_CLOUD_PROJECT_ID && process.env.GOOGLE_CLOUD_KEYFILE)) {
+  try {
+    ttsClient = new TextToSpeechClient({
+      projectId: process.env.GOOGLE_CLOUD_PROJECT_ID,
+      keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_KEYFILE
+    })
+  } catch (e) {
+    console.error('Failed to initialize Google TTS client:', e)
+    ttsClient = null
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,80 +44,87 @@ export async function POST(request: NextRequest) {
     const elevenApiKey = process.env.ELEVENLABS_API_KEY
     const elevenVoiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM' // Rachel
 
-    if (elevenApiKey) {
-      try {
-        const elevenUrl = `https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`
-        const elevenResp = await fetch(elevenUrl, {
-          method: 'POST',
-          headers: {
-            'xi-api-key': elevenApiKey,
-            'Content-Type': 'application/json',
-            'Accept': 'audio/mpeg'
-          },
-          body: JSON.stringify({ text })
-        })
-
-        if (elevenResp.ok) {
-          const arrayBuf = await elevenResp.arrayBuffer()
-          const audioBuffer = Buffer.from(arrayBuf)
-          return new NextResponse(audioBuffer, {
-            headers: {
-              'Content-Type': 'audio/mpeg',
-              'Content-Length': audioBuffer.length.toString(),
-              'X-Voice-Provider': 'elevenlabs'
-            }
-          })
-        } else {
-          // 402: payment required, 429: rate limit
-          console.error('ElevenLabs TTS error:', elevenResp.status, elevenResp.statusText)
-        }
-      } catch (err) {
-        console.error('ElevenLabs TTS fetch failed:', err)
-      }
+    // Provide a clearer error if API key is missing
+    if (!elevenApiKey) {
+      return NextResponse.json(
+        { error: 'ElevenLabs API key not configured', code: 'missing_api_key' },
+        { status: 500, headers: { 'X-Voice-Provider': 'elevenlabs' } }
+      )
     }
 
-    // Fallback to Google TTS if configured
-    if (process.env.GOOGLE_CLOUD_PROJECT_ID) {
-      try {
-        // Construct the request for Google Cloud Text-to-Speech
-        const synthesizeRequest = {
-          input: { text },
-          voice: {
-            languageCode: 'en-US',
-            name: 'en-US-Chirp3-HD-Rasalgethi',
-            ssmlGender: 'MALE' as const
-          },
-          audioConfig: {
-            audioEncoding: 'MP3' as const,
-            sampleRateHertz: 24000
-          }
-        }
+    try {
+      const usedVoiceId = elevenVoiceId
+      const elevenUrl = `https://api.elevenlabs.io/v1/text-to-speech/${usedVoiceId}`
+      const elevenResp = await fetch(elevenUrl, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': elevenApiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg'
+        },
+        body: JSON.stringify({ text })
+      })
 
-        const [response] = await ttsClient.synthesizeSpeech(synthesizeRequest)
-        if (!response.audioContent) {
-          throw new Error('No audio content received from Google TTS')
-        }
-
-        const audioBuffer = Buffer.from(response.audioContent)
+      if (elevenResp.ok) {
+        const arrayBuf = await elevenResp.arrayBuffer()
+        const audioBuffer = Buffer.from(arrayBuf)
         return new NextResponse(audioBuffer, {
           headers: {
             'Content-Type': 'audio/mpeg',
             'Content-Length': audioBuffer.length.toString(),
-            'X-Voice-Provider': 'google-tts'
+            'X-Voice-Provider': 'elevenlabs',
+            'X-Voice-Id': usedVoiceId
           }
         })
-      } catch (googleTTSError) {
-        console.error('Google TTS API error:', googleTTSError)
+      } else {
+        // Return a clear error if the configured voice cannot be used
+        const errText = await elevenResp.text().catch(() => '')
+        console.error('ElevenLabs TTS error (configured voice):', elevenResp.status, elevenResp.statusText, errText)
+        return NextResponse.json(
+          {
+            error: 'ElevenLabs TTS unavailable for configured voice',
+            status: elevenResp.status,
+            statusText: elevenResp.statusText,
+            details: errText
+          },
+          { status: 502, headers: { 'X-Voice-Provider': 'elevenlabs', 'X-Voice-Id': usedVoiceId } }
+        )
+      }
+    } catch (err) {
+      console.error('ElevenLabs TTS fetch failed:', err)
+      return NextResponse.json(
+        { error: 'ElevenLabs TTS fetch failed' },
+        { status: 500, headers: { 'X-Voice-Provider': 'elevenlabs', 'X-Voice-Id': elevenVoiceId } }
+      )
+    }
+
+    // Try Google TTS as fallback if configured
+    if (ttsClient) {
+      try {
+        const [response] = await ttsClient.synthesizeSpeech({
+          input: { text },
+          // Use a common English voice; can be customized
+          voice: { languageCode: 'en-US', ssmlGender: 'NEUTRAL' },
+          audioConfig: { audioEncoding: 'MP3' }
+        })
+        const audioBuffer = Buffer.from(response.audioContent as Buffer)
+        return new NextResponse(audioBuffer, {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Content-Length': audioBuffer.length.toString(),
+            'X-Voice-Provider': 'google'
+          }
+        })
+      } catch (googleErr) {
+        console.error('Google TTS error:', googleErr)
       }
     }
 
-    // Final fallback: ask client to use browser TTS
-    return NextResponse.json({ 
-      useBrowserTTS: true, 
-      text,
-      message: 'Using browser TTS',
-      provider: 'browser-tts'
-    })
+    // Final fallback: instruct client to use browser TTS
+    return NextResponse.json(
+      { useBrowserTTS: true, text, message: 'Falling back to browser TTS' },
+      { status: 200, headers: { 'X-Voice-Provider': 'browser' } }
+    )
   } catch (error) {
     console.error('Error synthesizing speech:', error)
     return NextResponse.json(

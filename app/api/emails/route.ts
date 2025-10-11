@@ -40,10 +40,20 @@ function getCategoryFilter(category: string) {
   switch (category) {
     case 'sent':
       return { labels: { has: 'SENT' } }
+    case 'drafts':
+      return { labels: { has: 'DRAFT' } }
     case 'promotions':
       return { labels: { has: 'CATEGORY_PROMOTIONS' } }
     case 'social':
       return { labels: { has: 'CATEGORY_SOCIAL' } }
+    case 'updates':
+      return { labels: { has: 'CATEGORY_UPDATES' } }
+    case 'forums':
+      return { labels: { has: 'CATEGORY_FORUMS' } }
+    case 'spam':
+      return { labels: { has: 'SPAM' } }
+    case 'trash':
+      return { labels: { has: 'TRASH' } }
     case 'starred':
       return { isStarred: true }
     case 'important':
@@ -67,22 +77,37 @@ async function getCachedEmails(userId: string, userEmail: string, category: stri
     }
     
     // Add category-specific filters based on labels
-    switch (category) {
-      case 'sent':
-        whereClause.labels = { has: 'SENT' }
-        break
-      case 'promotions':
-        whereClause.labels = { has: 'CATEGORY_PROMOTIONS' }
-        break
-      case 'social':
-        whereClause.labels = { has: 'CATEGORY_SOCIAL' }
-        break
-      case 'starred':
-        whereClause.isStarred = true
-        break
-      case 'important':
-        whereClause.isImportant = true
-        break
+  switch (category) {
+    case 'sent':
+      whereClause.labels = { has: 'SENT' }
+      break
+    case 'drafts':
+      whereClause.labels = { has: 'DRAFT' }
+      break
+    case 'promotions':
+      whereClause.labels = { has: 'CATEGORY_PROMOTIONS' }
+      break
+    case 'social':
+      whereClause.labels = { has: 'CATEGORY_SOCIAL' }
+      break
+    case 'updates':
+      whereClause.labels = { has: 'CATEGORY_UPDATES' }
+      break
+    case 'forums':
+      whereClause.labels = { has: 'CATEGORY_FORUMS' }
+      break
+    case 'spam':
+      whereClause.labels = { has: 'SPAM' }
+      break
+    case 'trash':
+      whereClause.labels = { has: 'TRASH' }
+      break
+    case 'starred':
+      whereClause.isStarred = true
+      break
+    case 'important':
+      whereClause.isImportant = true
+      break
       case 'inbox':
       default:
         whereClause.AND = [
@@ -286,8 +311,13 @@ export async function GET(request: NextRequest) {
         where: {
           userId: user.id,
           ...(category === 'sent' ? { labels: { has: 'SENT' } } :
+             category === 'drafts' ? { labels: { has: 'DRAFT' } } :
              category === 'promotions' ? { labels: { has: 'CATEGORY_PROMOTIONS' } } :
              category === 'social' ? { labels: { has: 'CATEGORY_SOCIAL' } } :
+             category === 'updates' ? { labels: { has: 'CATEGORY_UPDATES' } } :
+             category === 'forums' ? { labels: { has: 'CATEGORY_FORUMS' } } :
+             category === 'spam' ? { labels: { has: 'SPAM' } } :
+             category === 'trash' ? { labels: { has: 'TRASH' } } :
              category === 'starred' ? { isStarred: true } :
              category === 'important' ? { isImportant: true } :
              { 
@@ -343,11 +373,26 @@ export async function GET(request: NextRequest) {
           case 'sent':
             query = 'in:sent'
             break
+          case 'drafts':
+            query = 'in:drafts'
+            break
           case 'promotions':
             query = 'category:promotions'
             break
           case 'social':
             query = 'category:social'
+            break
+          case 'updates':
+            query = 'category:updates'
+            break
+          case 'forums':
+            query = 'category:forums'
+            break
+          case 'spam':
+            query = 'in:spam'
+            break
+          case 'trash':
+            query = 'in:trash'
             break
           case 'starred':
             query = 'is:starred'
@@ -661,11 +706,26 @@ export async function GET(request: NextRequest) {
       case 'sent':
         query = 'in:sent'
         break
+      case 'drafts':
+        query = 'in:drafts'
+        break
       case 'promotions':
         query = 'category:promotions'
         break
       case 'social':
         query = 'category:social'
+        break
+      case 'updates':
+        query = 'category:updates'
+        break
+      case 'forums':
+        query = 'category:forums'
+        break
+      case 'spam':
+        query = 'in:spam'
+        break
+      case 'trash':
+        query = 'in:trash'
         break
       case 'starred':
         query = 'is:starred'
@@ -692,8 +752,13 @@ export async function GET(request: NextRequest) {
         where: { 
           userId: user.id,
           ...(category === 'sent' ? { labels: { has: 'SENT' } } :
+             category === 'drafts' ? { labels: { has: 'DRAFT' } } :
              category === 'promotions' ? { labels: { has: 'CATEGORY_PROMOTIONS' } } :
              category === 'social' ? { labels: { has: 'CATEGORY_SOCIAL' } } :
+             category === 'updates' ? { labels: { has: 'CATEGORY_UPDATES' } } :
+             category === 'forums' ? { labels: { has: 'CATEGORY_FORUMS' } } :
+             category === 'spam' ? { labels: { has: 'SPAM' } } :
+             category === 'trash' ? { labels: { has: 'TRASH' } } :
              category === 'starred' ? { isStarred: true } :
              category === 'important' ? { isImportant: true } :
              { 
@@ -978,9 +1043,9 @@ export async function GET(request: NextRequest) {
     // Filter cached emails to exclude any that were just fetched
     const filteredCachedEmails = cachedEmails.filter(email => !newEmailIds.has(email.id))
     
-    // Combine new emails with filtered cached emails, sorted by date
+    // Combine new emails with filtered cached emails, sorted by receivedAt
     const allEmails = [...newEmails, ...filteredCachedEmails]
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime())
       .slice(0, maxResults)
     
     console.log(`Total emails returned: ${allEmails.length} (${newEmailsCount} newly fetched, ${filteredCachedEmails.length} cached)`)
@@ -1009,7 +1074,7 @@ export async function GET(request: NextRequest) {
     
     if (allEmails.length > 0) {
       const oldestEmail = allEmails[allEmails.length - 1]
-      const oldestEmailDate = new Date(oldestEmail.date)
+      const oldestEmailDate = new Date(oldestEmail.receivedAt)
       
       // Check if we have the maximum number of results, which suggests there might be more
       const hasMaxResults = allEmails.length >= maxResults

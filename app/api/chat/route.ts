@@ -12,6 +12,7 @@ export const runtime = 'nodejs'
 export const revalidate = 0
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY
+const GROQ_MODEL = process.env.GROQ_MODEL || 'meta-llama/Llama-4-Scout-17B-16E-Instruct'
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
 const SERPAPI_KEY = process.env.SERPAPI_API_KEY
 
@@ -483,10 +484,12 @@ When users ask follow-up questions like "yes" or "show me more", refer to previo
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
         messages,
-        max_tokens: 1000,
-        temperature: 0.7
+        max_tokens: 600,
+        temperature: 0.2,
+        top_p: 0.9,
+        n: 1
       })
     })
 
@@ -519,6 +522,7 @@ When users ask follow-up questions like "yes" or "show me more", refer to previo
     await storeChatMessage(userId, 'assistant', textResponse)
 
     let audioUrl = null
+    let voiceProviderHeader: string | null = null
 
     // Generate voice response if requested
     if (includeVoice) {
@@ -536,34 +540,37 @@ When users ask follow-up questions like "yes" or "show me more", refer to previo
         })
 
         if (voiceResponse.ok) {
-          const contentType = voiceResponse.headers.get('content-type')
-          
-          // Check if response is JSON (browser TTS fallback)
-          if (contentType?.includes('application/json')) {
-            const data = await voiceResponse.json()
-            
-            if (data.useBrowserTTS) {
-              // Return special flag for client to use browser TTS
-              audioUrl = 'USE_BROWSER_TTS'
-            }
-          } else {
-            // Handle audio blob response (LMNT)
+          const contentType = voiceResponse.headers.get('content-type') || ''
+          const providerHeader = voiceResponse.headers.get('x-voice-provider')
+          if (providerHeader) {
+            voiceProviderHeader = providerHeader
+          }
+
+          if (contentType.startsWith('audio/')) {
             const audioBuffer = await voiceResponse.arrayBuffer()
             const base64Audio = Buffer.from(audioBuffer).toString('base64')
-            audioUrl = `data:audio/wav;base64,${base64Audio}`
+            audioUrl = `data:${contentType};base64,${base64Audio}`
+          } else if (contentType.includes('application/json')) {
+            const json = await voiceResponse.json()
+            if (json && json.useBrowserTTS) {
+              audioUrl = 'USE_BROWSER_TTS'
+            }
           }
         }
       } catch (voiceError) {
         console.error('Voice generation error:', voiceError)
-        // Set flag for client to use browser TTS as fallback
-        audioUrl = 'USE_BROWSER_TTS'
+        // No browser TTS fallback; keep audioUrl as null
       }
     }
 
-    return NextResponse.json({
+    const jsonResponse = NextResponse.json({
       response: textResponse,
       audioUrl
     })
+    if (voiceProviderHeader) {
+      jsonResponse.headers.set('X-Voice-Provider', voiceProviderHeader)
+    }
+    return jsonResponse
 
   } catch (error) {
     console.error('Chat API error:', error)

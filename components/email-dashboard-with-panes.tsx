@@ -39,6 +39,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Upload
+  ,
+  AlertTriangle
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/components/ui/use-toast'
@@ -477,7 +479,8 @@ export default function EmailDashboardWithPanes() {
         
         switch (currentSection) {
           case 'inbox':
-            shouldAddToCurrentSection = !emailLabels.includes('SENT') && !emailLabels.includes('DRAFT') && !emailLabels.includes('TRASH')
+            // Only add if categorized as inbox or explicitly labeled INBOX
+            shouldAddToCurrentSection = (newEmail?.category === 'inbox') || emailLabels.includes('INBOX')
             break
           case 'starred':
             shouldAddToCurrentSection = newEmail.isStarred
@@ -538,25 +541,22 @@ export default function EmailDashboardWithPanes() {
       
       switch (currentSection) {
         case 'inbox':
-          return matchesSearch && 
-                 !hasAnyLabel(GMAIL_LABELS.SENT) && 
-                 !hasAnyLabel(GMAIL_LABELS.DRAFT) && 
-                 !hasAnyLabel(GMAIL_LABELS.TRASH) &&
-                 !hasAnyLabel(GMAIL_LABELS.ARCHIVE)
+          // Trust server-side categorization to prevent overlap with Trash
+          return matchesSearch && (email.category === 'inbox' || emailLabels.includes('INBOX'))
         case 'starred':
           return matchesSearch && email.isStarred && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'sent':
-          return matchesSearch && hasAnyLabel(GMAIL_LABELS.SENT) && !hasAnyLabel(GMAIL_LABELS.TRASH)
+          return matchesSearch && (email.category === 'sent' || hasAnyLabel(GMAIL_LABELS.SENT)) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'drafts':
-          return matchesSearch && hasAnyLabel(GMAIL_LABELS.DRAFT) && !hasAnyLabel(GMAIL_LABELS.TRASH)
+          return matchesSearch && (email.category === 'drafts' || hasAnyLabel(GMAIL_LABELS.DRAFT)) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'important':
           return matchesSearch && email.isImportant && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'promotions':
-          return matchesSearch && hasAnyLabel(GMAIL_LABELS.PROMOTIONS) && !hasAnyLabel(GMAIL_LABELS.TRASH)
+          return matchesSearch && (email.category === 'promotions' || hasAnyLabel(GMAIL_LABELS.PROMOTIONS)) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'social':
-          return matchesSearch && hasAnyLabel(GMAIL_LABELS.SOCIAL) && !hasAnyLabel(GMAIL_LABELS.TRASH)
+          return matchesSearch && (email.category === 'social' || hasAnyLabel(GMAIL_LABELS.SOCIAL)) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'trash':
-          return matchesSearch && hasAnyLabel(GMAIL_LABELS.TRASH)
+          return matchesSearch && (email.category === 'trash' || hasAnyLabel(GMAIL_LABELS.TRASH))
         case 'archive':
           return matchesSearch && hasAnyLabel(GMAIL_LABELS.ARCHIVE) && !hasAnyLabel(GMAIL_LABELS.TRASH)
         case 'calendar':
@@ -591,7 +591,7 @@ export default function EmailDashboardWithPanes() {
         
         try {
           const headers = await createCSRFHeaders()
-          await fetch(`/api/emails/${email.id}/read`, {
+          await fetch(`/api/emails/${email.id}/mark-read`, {
             method: 'POST',
             headers
           })
@@ -894,6 +894,7 @@ export default function EmailDashboardWithPanes() {
                 { id: 'important', label: 'Important', icon: Tag, count: emailStats.important },
                 { id: 'promotions', label: 'Promotions', icon: Sparkles, count: 0 },
                 { id: 'social', label: 'Social', icon: Users, count: 0 },
+                { id: 'spam', label: 'Spam', icon: AlertTriangle, count: emails.filter(e => (e.labelIds?.includes('SPAM') || (e as any).labels?.includes('SPAM'))).length },
                 { id: 'trash', label: 'Trash', icon: Trash2, count: 0 },
                 { id: 'archive', label: 'Archive', icon: Archive, count: 0 },
                 { id: 'calendar', label: 'Calendar', icon: Calendar, count: 0 },
