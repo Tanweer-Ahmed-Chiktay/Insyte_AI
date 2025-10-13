@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/lib/auth'
 import { google } from 'googleapis'
+import { prisma } from '@/lib/prisma'
 
 export const runtime = "nodejs"
 // Force dynamic rendering for this route
@@ -68,9 +69,25 @@ export async function GET(
     if (!session?.user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+    
+    // Attempt to resolve access token from session, falling back to prisma account
+    let accessToken = session.accessToken as string | undefined
+    let refreshToken = session.refreshToken as string | undefined
 
-    if (!session.accessToken) {
-      return NextResponse.json({ error: 'No access token available' }, { status: 401 })
+    if (!accessToken) {
+      const account = await prisma.account.findFirst({
+        where: {
+          userId: session.user.id,
+          provider: 'google'
+        }
+      })
+
+      if (account?.access_token) {
+        accessToken = account.access_token
+        refreshToken = account.refresh_token ?? refreshToken
+      } else {
+        return NextResponse.json({ error: 'No access token available' }, { status: 401 })
+      }
     }
 
     // Set up OAuth2 client
@@ -81,8 +98,8 @@ export async function GET(
     )
 
     oauth2Client.setCredentials({
-      access_token: session.accessToken,
-      refresh_token: session.refreshToken
+      access_token: accessToken,
+      refresh_token: refreshToken
     })
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client })

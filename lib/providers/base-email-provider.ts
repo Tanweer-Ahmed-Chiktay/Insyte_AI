@@ -62,6 +62,7 @@ export abstract class BaseEmailProvider {
   abstract starEmail(id: string): Promise<void>;
   abstract unstarEmail(id: string): Promise<void>;
   abstract deleteEmail(id: string): Promise<void>;
+  abstract archiveEmail(id: string): Promise<void>;
   abstract getLabels(): Promise<{ id: string; name: string; type: string }[]>;
   abstract addLabel(emailId: string, labelId: string): Promise<void>;
   abstract removeLabel(emailId: string, labelId: string): Promise<void>;

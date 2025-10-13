@@ -20,6 +20,7 @@ interface EmailProviderConfig {
   id: string;
   type: EmailProviderType;
   userId: string;
+  email: string;
   credentials: ProviderCredentials;
   settings?: Record<string, any>;
 }
@@ -89,6 +90,7 @@ class ProviderFactory {
         id: providerConfig.id,
         type: providerConfig.provider as EmailProviderType,
         userId: providerConfig.userId,
+        email: providerConfig.user.email || '',
         credentials: {
           accessToken: account.access_token,
           refreshToken: account.refresh_token || undefined,
@@ -235,14 +237,14 @@ class ProviderFactory {
       case 'gmail':
         return new GmailProvider(
           config.credentials.accessToken,
-          config.credentials.refreshToken || '',
-          config.userId
+          config.email,
+          config.credentials.refreshToken || ''
         );
       case 'outlook':
         return new OutlookProvider(
           config.credentials.accessToken,
-          config.credentials.refreshToken || '',
-          config.userId
+          config.email,
+          config.credentials.refreshToken || ''
         );
       default:
         console.error(`Unknown email provider type: ${config.type}`);

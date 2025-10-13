@@ -27,7 +27,7 @@ function categorizeEmail(labels: string[], isSelfSent: boolean = false): string 
   if (labels.includes('STARRED')) return 'starred'
   if (labels.includes('IMPORTANT')) return 'important'
   if (labels.includes('INBOX')) return 'inbox'
-  return 'inbox'
+  return 'archive'
 }
 
 // Helper function to check if email is self-sent
@@ -58,6 +58,13 @@ function getCategoryFilter(category: string) {
       return { isStarred: true }
     case 'important':
       return { isImportant: true }
+    case 'archive':
+      return { 
+        AND: [
+          { NOT: { labels: { has: 'INBOX' } } },
+          { NOT: { labels: { hasSome: ['SENT', 'DRAFT', 'TRASH', 'SPAM'] } } }
+        ]
+      }
     case 'inbox':
     default:
       return { 
@@ -108,9 +115,18 @@ async function getCachedEmails(userId: string, userEmail: string, category: stri
     case 'important':
       whereClause.isImportant = true
       break
-      case 'inbox':
-      default:
-        whereClause.AND = [
+    case 'archive':
+      // Archived: not in INBOX and not TRASH/DRAFT/SENT
+      whereClause.AND = [
+        { NOT: { labels: { has: 'INBOX' } } },
+        { NOT: { labels: { has: 'TRASH' } } },
+        { NOT: { labels: { has: 'DRAFT' } } },
+        { NOT: { labels: { has: 'SENT' } } }
+      ]
+      break
+    case 'inbox':
+    default:
+      whereClause.AND = [
           {
             OR: [
               { labels: { has: 'INBOX' } },
@@ -732,6 +748,10 @@ export async function GET(request: NextRequest) {
         break
       case 'important':
         query = 'is:important'
+        break
+      case 'archive':
+        // Archived: grab from All Mail and exclude Inbox/Sent/Drafts/Trash/Spam
+        query = 'in:all -in:inbox -in:sent -in:drafts -in:trash -in:spam'
         break
       case 'inbox':
       default:

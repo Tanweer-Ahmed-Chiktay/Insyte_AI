@@ -476,6 +476,124 @@ When users ask follow-up questions like "yes" or "show me more", refer to previo
       }
     ]
 
+    // If streaming is requested (voice off), stream tokens as they arrive
+    const isStreamRequested =
+      request.headers.get('x-stream') === 'true' ||
+      request.nextUrl.searchParams.get('stream') === '1'
+
+    console.log('🔄 Streaming check:', {
+      xStreamHeader: request.headers.get('x-stream'),
+      streamParam: request.nextUrl.searchParams.get('stream'),
+      isStreamRequested,
+      includeVoice
+    })
+
+    if (isStreamRequested && !includeVoice) {
+      const groqStreamResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: GROQ_MODEL,
+          messages,
+          max_tokens: 600,
+          temperature: 0.2,
+          top_p: 0.9,
+          n: 1,
+          stream: true
+        })
+      })
+
+      if (!groqStreamResponse.ok || !groqStreamResponse.body) {
+        const errorText = await groqStreamResponse.text().catch(() => 'Unknown error')
+        console.error('Groq API stream error:', groqStreamResponse.status, errorText)
+        return NextResponse.json(
+          { error: 'Failed to start streaming response.' },
+          { status: 500 }
+        )
+      }
+
+      const encoder = new TextEncoder()
+      const decoder = new TextDecoder('utf-8')
+      let fullText = ''
+
+      const clientStream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          try {
+            const reader = groqStreamResponse.body!.getReader()
+            console.log('🔄 Starting stream processing...')
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) {
+                console.log('🔄 Stream completed, total text:', fullText.length, 'chars')
+                break
+              }
+              const chunkText = decoder.decode(value)
+              console.log('🔄 Raw chunk received:', chunkText.substring(0, 100))
+              // Parse SSE-style chunks: lines starting with "data: "
+              const lines = chunkText.split('\n')
+              for (const line of lines) {
+                const trimmed = line.trim()
+                if (!trimmed.startsWith('data:')) continue
+                const dataStr = trimmed.slice(5).trim()
+                if (!dataStr || dataStr === '[DONE]') continue
+                try {
+                  const json = JSON.parse(dataStr)
+                  const delta = json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.message?.content ?? ''
+                  if (delta) {
+                    console.log('🔄 Extracted delta:', delta)
+                    fullText += delta
+                    controller.enqueue(encoder.encode(delta))
+                  }
+                } catch (parseError) {
+                  console.log('🔄 Parse error, checking for raw JSON:', parseError)
+                  // Check if this looks like a raw JSON chunk (not SSE format)
+                  if (dataStr.startsWith('{') && dataStr.includes('"choices"')) {
+                    try {
+                      const rawJson = JSON.parse(dataStr)
+                      const content = rawJson?.choices?.[0]?.delta?.content ?? rawJson?.choices?.[0]?.message?.content ?? ''
+                      if (content) {
+                        console.log('🔄 Extracted content from raw JSON:', content)
+                        fullText += content
+                        controller.enqueue(encoder.encode(content))
+                      }
+                    } catch {
+                      // Skip malformed JSON chunks - don't send raw JSON to client
+                      console.warn('🔄 Skipping malformed JSON chunk:', dataStr.substring(0, 100))
+                    }
+                  } else {
+                    // Not JSON - treat as plain text only if it doesn't look like raw JSON
+                    if (!dataStr.startsWith('{')) {
+                      console.log('🔄 Treating as plain text:', dataStr)
+                      fullText += dataStr
+                      controller.enqueue(encoder.encode(dataStr))
+                    }
+                  }
+                }
+              }
+            }
+          } finally {
+            controller.close()
+            // Persist the assistant message after streaming completes
+            try {
+              await storeChatMessage(userId, 'assistant', fullText)
+            } catch (e) {
+              console.error('Failed to store streamed assistant message:', e)
+            }
+          }
+        }
+      })
+
+      return new Response(clientStream, {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-cache'
+        }
+      })
+    }
+
     // Call Groq API for text response
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',

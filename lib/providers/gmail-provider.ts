@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { prisma } from '../prisma';
 import { BaseEmailProvider, EmailMessage, SendEmailRequest, EmailListOptions, EmailListResponse } from './base-email-provider';
 
 export class GmailProvider extends BaseEmailProvider {
@@ -31,8 +32,10 @@ export class GmailProvider extends BaseEmailProvider {
         labelIds,
       };
 
-      const response = await this.gmail.users.messages.list(listParams);
-      const messages = response.data.messages || [];
+      const response = await this.withAuthRetry<{ data: { messages?: any[]; nextPageToken?: string; resultSizeEstimate?: number } }>(
+        () => this.gmail.users.messages.list(listParams)
+      );
+      const messages = response.data?.messages ?? [];
 
       const emails: EmailMessage[] = [];
       
@@ -56,8 +59,8 @@ export class GmailProvider extends BaseEmailProvider {
 
       return {
         emails,
-        nextPageToken: response.data.nextPageToken,
-        totalCount: response.data.resultSizeEstimate,
+        nextPageToken: response.data?.nextPageToken,
+        totalCount: response.data?.resultSizeEstimate,
       };
     } catch (error) {
       console.error('Error fetching emails:', error);
@@ -76,6 +79,64 @@ export class GmailProvider extends BaseEmailProvider {
            error?.status === 429 ||
            (error?.message && error.message.toLowerCase().includes('quota')) ||
            (error?.message && error.message.toLowerCase().includes('rate limit'));
+  }
+
+  private isAuthError(error: any): boolean {
+    const msg = (error?.message || '').toLowerCase();
+    const code = error?.code || error?.response?.status || error?.status;
+    const errStr = JSON.stringify(error || {});
+    return (
+      code === 401 ||
+      msg.includes('invalid_grant') ||
+      msg.includes('invalid token') ||
+      msg.includes('unauthorized') ||
+      errStr.includes('invalid_grant')
+    );
+  }
+
+  private async persistCredentials(credentials: any): Promise<void> {
+    try {
+      const access_token = credentials?.access_token;
+      const refresh_token = credentials?.refresh_token;
+      const expires_at = credentials?.expiry_date ? Math.floor(credentials.expiry_date / 1000) : undefined;
+
+      if (!access_token) return;
+
+      await prisma.account.updateMany({
+        where: {
+          user: { email: this.email },
+          provider: 'google'
+        },
+        data: {
+          access_token,
+          refresh_token: refresh_token ?? undefined,
+          expires_at
+        }
+      });
+      console.log('Gmail Provider: Persisted refreshed credentials for', this.email);
+    } catch (e) {
+      console.warn('Gmail Provider: Failed to persist refreshed credentials', e);
+    }
+  }
+
+  private async withAuthRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error: any) {
+      if (!this.isAuthError(error)) throw error;
+      console.log('Gmail Provider: Auth error detected, attempting token refresh');
+      try {
+        const { credentials } = await this.oauth2Client.refreshAccessToken();
+        this.accessToken = credentials.access_token;
+        this.oauth2Client.setCredentials(credentials);
+        await this.persistCredentials(credentials);
+        console.log('Gmail Provider: Access token refreshed, retrying operation');
+        return await operation();
+      } catch (refreshErr) {
+        console.error('Gmail Provider: Token refresh failed:', refreshErr);
+        throw error;
+      }
+    }
   }
 
   private async retryWithBackoff<T>(operation: () => Promise<T>, maxRetries = 3): Promise<T> {
@@ -97,13 +158,13 @@ export class GmailProvider extends BaseEmailProvider {
 
   async getEmail(id: string): Promise<EmailMessage> {
     try {
-      const response = await this.retryWithBackoff(() => 
+      const response = await this.withAuthRetry(() => this.retryWithBackoff(() => 
         this.gmail.users.messages.get({
           userId: 'me',
           id,
           format: 'full'
         })
-      ) as { data: any };
+      )) as { data: any };
       
       const email = this.parseGmailMessage(response.data);
       if (!email) {
@@ -164,38 +225,68 @@ export class GmailProvider extends BaseEmailProvider {
   }
 
   async starEmail(id: string): Promise<void> {
-    await this.gmail.users.messages.modify({
+    await this.withAuthRetry(() => this.gmail.users.messages.modify({
       userId: 'me',
       id,
       requestBody: {
         addLabelIds: ['STARRED'],
       },
-    });
+    }));
   }
 
   async unstarEmail(id: string): Promise<void> {
-    await this.gmail.users.messages.modify({
+    await this.withAuthRetry(() => this.gmail.users.messages.modify({
       userId: 'me',
       id,
       requestBody: {
         removeLabelIds: ['STARRED'],
       },
-    });
+    }));
   }
 
   async deleteEmail(id: string): Promise<void> {
-    await this.gmail.users.messages.trash({
-      userId: 'me',
-      id,
-    });
+    try {
+      console.log(`Gmail Provider: Attempting to delete email ${id}`);
+      const result = await this.withAuthRetry(() => this.retryWithBackoff(() => 
+        this.gmail.users.messages.trash({
+          userId: 'me',
+          id,
+        })
+      ));
+      console.log(`Gmail Provider: Successfully deleted email ${id}`, result);
+    } catch (error: any) {
+      console.error(`Gmail Provider: Failed to delete email ${id}:`, error);
+      throw new Error(`Failed to delete email: ${error?.message || 'Unknown error'}`);
+    }
+  }
+
+  async archiveEmail(id: string): Promise<void> {
+    try {
+      console.log(`Gmail Provider: Attempting to archive email ${id}`);
+      const result = await this.withAuthRetry(() => this.retryWithBackoff(() => 
+        this.gmail.users.messages.modify({
+          userId: 'me',
+          id,
+          requestBody: {
+            removeLabelIds: ['INBOX'],
+          },
+        })
+      ));
+      console.log(`Gmail Provider: Successfully archived email ${id}`, result);
+    } catch (error: any) {
+      console.error(`Gmail Provider: Failed to archive email ${id}:`, error);
+      throw new Error(`Failed to archive email: ${error?.message || 'Unknown error'}`);
+    }
   }
 
   async getLabels(): Promise<{ id: string; name: string; type: string }[]> {
-    const response = await this.gmail.users.labels.list({
-      userId: 'me',
-    });
+    const response = await this.withAuthRetry<{ data: { labels: any[] } }>(() =>
+      this.gmail.users.labels.list({
+        userId: 'me',
+      })
+    );
 
-    return response.data.labels.map((label: any) => ({
+    return (response.data?.labels || []).map((label: any) => ({
       id: label.id,
       name: label.name,
       type: label.type,
@@ -203,23 +294,23 @@ export class GmailProvider extends BaseEmailProvider {
   }
 
   async addLabel(emailId: string, labelId: string): Promise<void> {
-    await this.gmail.users.messages.modify({
+    await this.withAuthRetry(() => this.gmail.users.messages.modify({
       userId: 'me',
       id: emailId,
       requestBody: {
         addLabelIds: [labelId],
       },
-    });
+    }));
   }
 
   async removeLabel(emailId: string, labelId: string): Promise<void> {
-    await this.gmail.users.messages.modify({
+    await this.withAuthRetry(() => this.gmail.users.messages.modify({
       userId: 'me',
       id: emailId,
       requestBody: {
         removeLabelIds: [labelId],
       },
-    });
+    }));
   }
 
   async refreshAccessToken(): Promise<string> {
@@ -227,6 +318,7 @@ export class GmailProvider extends BaseEmailProvider {
       const { credentials } = await this.oauth2Client.refreshAccessToken();
       this.accessToken = credentials.access_token;
       this.oauth2Client.setCredentials(credentials);
+      await this.persistCredentials(credentials);
       return credentials.access_token;
     } catch (error) {
       console.error('Error refreshing access token:', error);

@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Mail, Sparkles, Brain, Zap, Shield, Clock } from 'lucide-react'
-import { EmailDashboard } from '@/components/email-dashboard'
+import EmailDashboardWithPanes from '@/components/email-dashboard-with-panes'
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -30,7 +30,7 @@ export default function HomePage() {
   }
 
   if (session) {
-    return <EmailDashboard />
+    return <EmailDashboardWithPanes />
   }
 
   return (

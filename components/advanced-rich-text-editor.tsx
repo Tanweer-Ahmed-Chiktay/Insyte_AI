@@ -746,10 +746,29 @@ export function AdvancedRichTextEditor({
   // Link functions
   const setLink = () => {
     if (linkUrl && editor) {
+      // Sanitize URL to permit only http, https, and mailto protocols
+      const sanitizeUrl = (url: string) => {
+        try {
+          const parsed = new URL(url, 'http://example.com')
+          const protocol = parsed.protocol.replace(':', '')
+          return ['http', 'https', 'mailto'].includes(protocol) ? url : ''
+        } catch {
+          return ''
+        }
+      }
+
+      const safeUrl = sanitizeUrl(linkUrl.trim())
+      if (!safeUrl) {
+        setShowLinkDialog(false)
+        setLinkUrl('')
+        setLinkText('')
+        return
+      }
+
       if (linkText) {
-        editor.chain().focus().insertContent(`<a href="${linkUrl}">${linkText}</a>`).run()
+        editor.chain().focus().insertContent(`<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>`).run()
       } else {
-        editor.chain().focus().setLink({ href: linkUrl }).run()
+        editor.chain().focus().setLink({ href: safeUrl, target: '_blank', rel: 'noopener noreferrer' }).run()
       }
       setShowLinkDialog(false)
       setLinkUrl('')

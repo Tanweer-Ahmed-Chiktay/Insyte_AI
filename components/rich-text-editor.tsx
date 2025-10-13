@@ -212,7 +212,27 @@ export function RichTextEditor({
 
   const insertLink = () => {
     if (linkUrl && linkText) {
-      const link = `<a href="${linkUrl}" target="_blank" style="color: #0066cc; text-decoration: underline;">${linkText}</a>`
+      // Sanitize URL to permit only http, https, and mailto protocols
+      const sanitizeUrl = (url: string) => {
+        try {
+          const parsed = new URL(url, 'http://example.com')
+          const protocol = parsed.protocol.replace(':', '')
+          return ['http', 'https', 'mailto'].includes(protocol) ? url : ''
+        } catch {
+          return ''
+        }
+      }
+
+      const safeUrl = sanitizeUrl(linkUrl.trim())
+      if (!safeUrl) {
+        // Invalid or unsafe URL; do not insert
+        setShowLinkDialog(false)
+        setLinkUrl('')
+        setLinkText('')
+        return
+      }
+
+      const link = `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: underline;">${linkText}</a>`
       execCommand('insertHTML', link)
       setShowLinkDialog(false)
       setLinkUrl('')

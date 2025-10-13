@@ -87,7 +87,6 @@
     "react-hook-form": "^7.53.0",
     "react-virtualized-auto-sizer": "^1.0.26",
     "react-window": "^1.8.11",
-    "redis": "^5.8.0",
     "serpapi": "^2.2.1",
     "tailwind-merge": "^2.5.3",
     "tailwindcss-animate": "^1.0.7",

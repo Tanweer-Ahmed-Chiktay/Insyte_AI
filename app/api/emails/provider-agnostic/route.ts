@@ -240,8 +240,9 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const params = emailActionSchema.parse(body);
+  const body = await request.json();
+  const params = emailActionSchema.parse(body);
+  const correlationId = `arch-${Math.random().toString(36).slice(2)}`;
 
     const userId = session.user.id;
     let results: any[] = [];
@@ -270,8 +271,17 @@ export async function PATCH(request: NextRequest) {
             case 'delete':
               return await provider.deleteEmail(emailId);
             case 'archive':
-              // Archive functionality would need to be implemented via labels
-              return await provider.addLabel(emailId, 'ARCHIVE');
+              try {
+                const before = await provider.getEmail(emailId).catch(() => null);
+                console.log('[Archive][Before]', { correlationId, provider: provider.constructor.name, emailId, labels: before?.labels });
+                const archiveResult = await provider.archiveEmail(emailId);
+                const after = await provider.getEmail(emailId).catch(() => null);
+                console.log('[Archive][After]', { correlationId, provider: provider.constructor.name, emailId, labels: after?.labels });
+                return archiveResult;
+              } catch (e) {
+                console.error('[Archive][Error]', { correlationId, provider: provider.constructor.name, emailId, error: (e as any)?.message || e });
+                throw e;
+              }
             default:
               throw new Error(`Unknown action: ${params.action}`);
           }
@@ -282,9 +292,11 @@ export async function PATCH(request: NextRequest) {
       const providers = await providerFactory.getUserEmailProviders(userId);
       
       for (const provider of providers) {
+        console.log(`Processing ${params.action} action for provider: ${provider.constructor.name}`);
         const providerResults = await Promise.allSettled(
           params.emailIds.map(async (emailId) => {
             try {
+              console.log(`Attempting ${params.action} on email ${emailId} via ${provider.constructor.name}`);
               switch (params.action) {
                 case 'markRead':
                   return await provider.markAsRead(emailId);
@@ -295,14 +307,26 @@ export async function PATCH(request: NextRequest) {
                 case 'unstar':
                   return await provider.unstarEmail(emailId);
                 case 'delete':
-                  return await provider.deleteEmail(emailId);
+                  const deleteResult = await provider.deleteEmail(emailId);
+                  console.log(`Delete result for ${emailId}:`, deleteResult);
+                  return deleteResult;
                 case 'archive':
-                  // Archive functionality would need to be implemented via labels
-                  return await provider.addLabel(emailId, 'ARCHIVE');
+                  try {
+                    const before = await provider.getEmail(emailId).catch(() => null);
+                    console.log('[Archive][Before]', { correlationId, provider: provider.constructor.name, emailId, labels: before?.labels });
+                    const archiveResult = await provider.archiveEmail(emailId);
+                    const after = await provider.getEmail(emailId).catch(() => null);
+                    console.log('[Archive][After]', { correlationId, provider: provider.constructor.name, emailId, labels: after?.labels });
+                    return archiveResult;
+                  } catch (e) {
+                    console.error('[Archive][Error]', { correlationId, provider: provider.constructor.name, emailId, error: (e as any)?.message || e });
+                    throw e;
+                  }
                 default:
                   throw new Error(`Unknown action: ${params.action}`);
               }
             } catch (error) {
+              console.error(`Error performing ${params.action} on email ${emailId} via ${provider.constructor.name}:`, error);
               // Email might not exist in this provider, continue
               return null;
             }
@@ -310,6 +334,47 @@ export async function PATCH(request: NextRequest) {
         );
         results.push(...providerResults);
       }
+    }
+
+    // Persist action to local DB so UI reflects changes on refresh
+    try {
+      if (['archive', 'delete'].includes(params.action)) {
+        const emailsToUpdate = await prisma.email.findMany({
+          where: {
+            userId,
+            externalId: { in: params.emailIds }
+          },
+          select: { id: true, labels: true }
+        });
+
+        for (const email of emailsToUpdate) {
+          const currentLabels = Array.isArray(email.labels) ? email.labels : [];
+          let updatedLabels = currentLabels;
+          let setTrash = false;
+          let setRead = true;
+
+          if (params.action === 'archive') {
+            // Gmail archive semantics: remove INBOX
+            updatedLabels = currentLabels.filter(l => l !== 'INBOX');
+          } else if (params.action === 'delete') {
+            // Move to trash: remove INBOX and add TRASH
+            updatedLabels = currentLabels.filter(l => l !== 'INBOX');
+            if (!updatedLabels.includes('TRASH')) updatedLabels.push('TRASH');
+            setTrash = true;
+          }
+
+          await prisma.email.update({
+            where: { id: email.id },
+            data: {
+              labels: updatedLabels,
+              isTrash: setTrash,
+              isRead: setRead
+            }
+          });
+        }
+      }
+    } catch (dbErr) {
+      console.error('Failed to update email records after action:', dbErr);
     }
 
     // Invalidate email cache for this user

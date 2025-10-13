@@ -133,6 +133,14 @@ export class OutlookProvider extends BaseEmailProvider {
     await this.graphClient.api(`/me/messages/${id}`).delete();
   }
 
+  async archiveEmail(id: string): Promise<void> {
+    // Move message to the well-known Archive folder
+    const archiveFolder = await this.graphClient.api('/me/mailFolders/archive').get();
+    await this.graphClient.api(`/me/messages/${id}/move`).post({
+      destinationId: archiveFolder.id,
+    });
+  }
+
   async getLabels(): Promise<{ id: string; name: string; type: string }[]> {
     try {
       const response = await this.graphClient.api('/me/mailFolders').get();

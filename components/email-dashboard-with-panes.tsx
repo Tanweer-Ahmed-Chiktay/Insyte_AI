@@ -42,12 +42,15 @@ import {
   ,
   AlertTriangle
 } from 'lucide-react'
+import { Home as HomeIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/components/ui/use-toast'
 import { AIAssistant } from '@/components/ai-assistant'
 import { ContactsTab } from '@/components/contacts-tab'
 import { SlackTab } from '@/components/slack-tab'
 import { CalendarTab } from '@/components/calendar-tab'
+import HomeDashboard from '@/components/home-dashboard'
+import SuperHomeDashboard from '@/components/super-home-dashboard'
 import { AccountSwitcher } from '@/components/account-switcher'
 import { startEmailScheduler } from '@/lib/scheduler'
 import DOMPurify from 'dompurify'
@@ -165,7 +168,7 @@ export default function EmailDashboardWithPanes() {
   // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const [isDesktop, setIsDesktop] = useState(false)
-  const [currentSection, setCurrentSection] = useState('inbox')
+  const [currentSection, setCurrentSection] = useState('home')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null)
   const [fullEmail, setFullEmail] = useState<FullEmail | null>(null)
@@ -199,7 +202,7 @@ export default function EmailDashboardWithPanes() {
     hasMore,
     nextOlderThan
   } = useEmailCache({ 
-    category: currentSection, 
+    category: currentSection === 'home' ? 'inbox' : currentSection, 
     revalidateOnFocus: false,
     maxAgeMinutes: 10, // Increased from 5 to 10 minutes
     enablePrefetch: false // Disabled to reduce requests
@@ -207,7 +210,7 @@ export default function EmailDashboardWithPanes() {
   
   // WebSocket for real-time updates
   // Email store for direct updates
-  const { addEmails, updateEmail, removeEmail } = useEmailStore()
+  const { addEmails, updateEmail, removeEmail, moveEmailToCategory } = useEmailStore()
   
   // Function to fetch new emails by ID
   const fetchNewEmailsById = useCallback(async (emailIds: string[]) => {
@@ -287,6 +290,55 @@ export default function EmailDashboardWithPanes() {
       })
     }
   }, [removeEmail, toast])
+
+  // Function to archive email from store (UI-only removal with archive toast)
+  const archiveEmailFromStore = useCallback((emailId: string) => {
+    if (!emailId) return
+
+    // Find the email in the current section to update labels and category
+    const currentEmails = emailStore.getEmails?.(currentSection) || []
+    const email = currentEmails.find(e => e.id === emailId)
+
+    // Compute updated labels: remove INBOX
+    const existingLabels = (email?.labelIds || email?.labels || []) as string[]
+    const updatedLabels = existingLabels.filter(l => l !== 'INBOX')
+
+    // Optimistically update the email's labels/category/read state
+    updateEmail(emailId, {
+      labels: updatedLabels,
+      labelIds: updatedLabels,
+      category: 'archive',
+      isRead: true
+    })
+
+    // Move email from its current section to archive for immediate UI consistency
+    const fromCategory = email?.category || currentSection
+    if (fromCategory && fromCategory !== 'archive') {
+      moveEmailToCategory(emailId, fromCategory, 'archive')
+    }
+
+    toast({
+      title: "Email archived",
+      description: "Email moved to Archive",
+      duration: 2000
+    })
+  }, [emailStore, currentSection, updateEmail, moveEmailToCategory, toast])
+
+  // Helper: force-refresh specific categories from Gmail and update store
+  const forceRefreshCategories = useCallback(async (categories: string[]) => {
+    try {
+      for (const cat of categories) {
+        const params = new URLSearchParams({ category: cat, forceRefresh: 'true', refreshOnly: 'true' })
+        const res = await fetch(`/api/emails?${params.toString()}`)
+        const data = await res.json()
+        const hasMore = data?.pagination?.hasMore ?? data?.hasMore ?? false
+        const nextOlderThan = data?.pagination?.nextOlderThan ?? data?.nextOlderThan
+        emailStore.setEmails?.(cat, data.emails || [], data.cacheInfo || {}, hasMore, nextOlderThan)
+      }
+    } catch (err) {
+      console.error('Force refresh categories failed:', err)
+    }
+  }, [emailStore])
 
   // Memoized WebSocket callbacks to prevent infinite re-renders
   const handleEmailUpdate = useCallback((data: any) => {
@@ -392,6 +444,8 @@ export default function EmailDashboardWithPanes() {
   const dragHandlersRef = useRef<{ onDragStart: (email: Email) => void, onDragEnd: () => void } | null>(null)
   const panesRef = useRef<any[]>([])
   const activePaneRef = useRef<string>('main')
+  // Ref for email action handler to avoid TDZ in earlier effects
+  const handleEmailActionRef = useRef<(action: string, email: Email) => Promise<void> | void>()
   
   // Handle window resize for responsive design
   useEffect(() => {
@@ -403,6 +457,112 @@ export default function EmailDashboardWithPanes() {
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  // Wire row menu actions (reply, forward, mark read/unread, archive, delete)
+  useEffect(() => {
+    const onRowAction = async (event: Event) => {
+      const e = event as CustomEvent
+      const { action, email } = (e.detail || {}) as { action: string, email: Email }
+      if (!action || !email) return
+
+      try {
+        if (action === 'reply' || action === 'forward') {
+          // Extract sender email address from "From" header
+          const match = email.from.match(/<([^>]+)>/)
+          const sender = match ? match[1] : email.from
+          const subjectPrefix = action === 'reply' ? 'Re: ' : 'Fwd: '
+
+          // Try to fetch full email to include quoted content
+          let quotedHtml = ''
+          try {
+            const headers = await createCSRFHeaders()
+            const res = await fetch(`/api/emails/${email.id}`, { headers })
+            if (res.ok) {
+              const detail = await res.json()
+              const originalHtml = detail.htmlBody || ''
+              const originalText = detail.textBody || ''
+              const sanitizedHtml = originalHtml ? DOMPurify.sanitize(originalHtml) : ''
+              const textAsHtml = originalText
+                ? `<pre style="white-space:pre-wrap">${DOMPurify.sanitize(originalText)}</pre>`
+                : ''
+              const bodyContent = sanitizedHtml || textAsHtml || ''
+              const headerBlock = `
+                <div style="margin-top:12px;padding:10px;border-left:3px solid #dadce0;background:#f8f9fa"> 
+                  <div style="font-size:12px;color:#5f6368;margin-bottom:8px">
+                    From: ${DOMPurify.sanitize(detail.from || email.from)}<br/>
+                    To: ${DOMPurify.sanitize(detail.to || '')}<br/>
+                    Date: ${DOMPurify.sanitize(detail.receivedAt || '')}<br/>
+                    Subject: ${DOMPurify.sanitize(detail.subject || email.subject || '')}
+                  </div>
+                  ${bodyContent}
+                </div>`
+              quotedHtml = headerBlock
+            }
+          } catch (err) {
+            console.warn('Failed to load full email for quoting, proceeding without body', err)
+          }
+
+          setComposeData(prev => ({
+            ...prev,
+            to: action === 'reply' ? sender : '',
+            subject: subjectPrefix + (email.subject || ''),
+            body: quotedHtml
+          }))
+          setIsComposing(true)
+          return
+        }
+
+        if (action === 'markRead') {
+          // Optimistic update locally
+          emailStore.updateEmail(email.id, { isRead: true })
+          // Apply action across providers
+          const headers = await createCSRFHeaders()
+          await fetch('/api/emails/provider-agnostic', {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ action: 'markRead', emailIds: [email.id] })
+          })
+          return
+        }
+        if (action === 'markUnread') {
+          // Optimistic update locally
+          emailStore.updateEmail(email.id, { isRead: false })
+          const headers = await createCSRFHeaders()
+          await fetch('/api/emails/provider-agnostic', {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ action: 'markUnread', emailIds: [email.id] })
+          })
+          return
+        }
+
+        if (action === 'archive' || action === 'delete') {
+          await handleEmailActionRef.current?.(action, email)
+          return
+        }
+
+        if (action === 'moveTo') {
+          // Map Move To to Archive for now
+          await handleEmailActionRef.current?.('archive', email)
+          return
+        }
+
+        if (action === 'label') {
+          // Map Label to Star/Unstar for now
+          await handleEmailActionRef.current?.('star', email)
+          return
+        }
+
+        console.log('Row action not yet wired:', action)
+      } catch (err) {
+        console.error('Row action error:', err)
+        toast({ title: 'Action failed', description: `Could not ${action} email`, variant: 'destructive' })
+      }
+    }
+
+    window.addEventListener('email-row-action', onRowAction as EventListener)
+    return () => window.removeEventListener('email-row-action', onRowAction as EventListener)
+  }, [emailStore, setComposeData, setIsComposing, toast])
 
   // Gmail watch enabled - real-time push notifications from Gmail
   // Requires Google Cloud Pub/Sub configuration with MyTopic and MySub
@@ -464,7 +624,9 @@ export default function EmailDashboardWithPanes() {
       // Only refresh if the event is for the current section
       if (category === currentSection || category === 'inbox') {
         console.log(`[Email List Refresh] Refreshing ${currentSection} due to ${action} in ${category}`)
-        refresh(false) // Use cached data if available
+        // For archive/delete actions, bypass cache to reflect Gmail immediately
+        const force = action === 'archive' || action === 'delete'
+        refresh(force)
       }
     }
 
@@ -558,7 +720,14 @@ export default function EmailDashboardWithPanes() {
         case 'trash':
           return matchesSearch && (email.category === 'trash' || hasAnyLabel(GMAIL_LABELS.TRASH))
         case 'archive':
-          return matchesSearch && hasAnyLabel(GMAIL_LABELS.ARCHIVE) && !hasAnyLabel(GMAIL_LABELS.TRASH)
+          // Archive section: Trust server category OR Gmail semantics
+          // Gmail archive semantics: email no longer has INBOX and is not TRASH/DRAFT/SENT
+          const isInInbox = emailLabels.includes('INBOX')
+          const isTrashed = hasAnyLabel(GMAIL_LABELS.TRASH)
+          const isDraftOrSent = hasAnyLabel(GMAIL_LABELS.DRAFT) || hasAnyLabel(GMAIL_LABELS.SENT)
+          return matchesSearch && (
+            email.category === 'archive' || (!isInInbox && !isTrashed && !isDraftOrSent)
+          )
         case 'calendar':
           // For calendar, we'll show a placeholder for now - this would need calendar integration
           return false
@@ -694,27 +863,47 @@ export default function EmailDashboardWithPanes() {
         case 'star':
           emailStore.updateEmail(email.id, { isStarred: !email.isStarred })
           const starHeaders = await createCSRFHeaders()
-          await fetch(`/api/emails/${email.id}/star`, {
-            method: 'POST',
+          await fetch('/api/emails/provider-agnostic', {
+            method: 'PATCH',
             headers: starHeaders,
-            body: JSON.stringify({ starred: !email.isStarred })
+            body: JSON.stringify({ action: (!email.isStarred ? 'star' : 'unstar'), emailIds: [email.id] })
           })
           break
         case 'archive':
+          // Optimistic update: mark as read and remove from current lists
           emailStore.updateEmail(email.id, { isRead: true })
+          archiveEmailFromStore(email.id)
           const archiveHeaders = await createCSRFHeaders()
-          await fetch(`/api/emails/${email.id}/archive`, { 
-            method: 'POST',
-            headers: archiveHeaders
+          await fetch('/api/emails/provider-agnostic', {
+            method: 'PATCH',
+            headers: archiveHeaders,
+            body: JSON.stringify({ action: 'archive', emailIds: [email.id] })
           })
+          // Notify list refresh so current section updates if needed
+          window.dispatchEvent(new CustomEvent('email-list-refresh', {
+            detail: { category: 'inbox', action: 'archive' }
+          }))
+          // Also refresh the archive view directly to surface newly archived emails
+          window.dispatchEvent(new CustomEvent('email-list-refresh', {
+            detail: { category: 'archive', action: 'archive' }
+          }))
+          // Verified sync: short delay then force-refresh Inbox and Archive from Gmail
+          await new Promise(r => setTimeout(r, 350))
+          await forceRefreshCategories(['inbox', 'archive'])
           break
         case 'delete':
+          // Optimistic update: mark as read and remove from store
           emailStore.updateEmail(email.id, { isRead: true })
+          removeEmailFromStore(email.id)
           const deleteHeaders = await createCSRFHeaders()
-          await fetch(`/api/emails/${email.id}`, { 
-            method: 'DELETE',
-            headers: deleteHeaders
+          await fetch('/api/emails/provider-agnostic', {
+            method: 'PATCH',
+            headers: deleteHeaders,
+            body: JSON.stringify({ action: 'delete', emailIds: [email.id] })
           })
+          window.dispatchEvent(new CustomEvent('email-list-refresh', {
+            detail: { category: 'inbox', action: 'delete' }
+          }))
           break
         default:
           console.log(`Action ${action} not implemented yet`)
@@ -728,6 +917,11 @@ export default function EmailDashboardWithPanes() {
       })
     }
   }, [emailStore, toast])
+
+  // Keep ref in sync with latest handler
+  useEffect(() => {
+    handleEmailActionRef.current = handleEmailAction
+  }, [handleEmailAction])
   
   const validateEmail = (email: string) => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
@@ -887,6 +1081,7 @@ export default function EmailDashboardWithPanes() {
             {/* Navigation */}
             <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
               {[
+                { id: 'home', label: 'Home', icon: HomeIcon, count: 0 },
                 { id: 'inbox', label: 'Inbox', icon: Mail, count: emailStats.unread },
                 { id: 'starred', label: 'Starred', icon: Star, count: emailStats.starred },
                 { id: 'sent', label: 'Sent', icon: Send },
@@ -896,7 +1091,13 @@ export default function EmailDashboardWithPanes() {
                 { id: 'social', label: 'Social', icon: Users, count: 0 },
                 { id: 'spam', label: 'Spam', icon: AlertTriangle, count: emails.filter(e => (e.labelIds?.includes('SPAM') || (e as any).labels?.includes('SPAM'))).length },
                 { id: 'trash', label: 'Trash', icon: Trash2, count: 0 },
-                { id: 'archive', label: 'Archive', icon: Archive, count: 0 },
+                { id: 'archive', label: 'Archive', icon: Archive, count: emails.filter(e => {
+                  const emailLabels = (e as any).labelIds || (e as any).labels || []
+                  const isInInbox = emailLabels.includes('INBOX')
+                  const isTrashed = emailLabels.some((label: string) => ['TRASH'].includes(label))
+                  const isDraftOrSent = emailLabels.some((label: string) => ['DRAFT', 'SENT'].includes(label))
+                  return e.category === 'archive' || (!isInInbox && !isTrashed && !isDraftOrSent)
+                }).length },
                 { id: 'calendar', label: 'Calendar', icon: Calendar, count: 0 },
                 { id: 'slack', label: 'Slack', icon: MessageCircle, count: 0 }
               ].map((item) => (
@@ -1019,7 +1220,9 @@ export default function EmailDashboardWithPanes() {
         
         {/* Content Area */}
         <div className="flex-1 flex min-h-0">
-          {currentSection === 'slack' ? (
+          {currentSection === 'home' ? (
+            <SuperHomeDashboard onNavigate={setCurrentSection} />
+          ) : currentSection === 'slack' ? (
             <SlackTab />
           ) : currentSection === 'calendar' ? (
             <CalendarTab />

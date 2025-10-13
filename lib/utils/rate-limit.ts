@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Dynamic Redis import to avoid build-time issues
-type RedisClientType = any;
-
 interface RateLimitOptions {
   requests: number;
   window: number; // in seconds
@@ -18,8 +15,6 @@ interface RateLimitResult {
 }
 
 class RateLimiter {
-  private redis: RedisClientType | null = null;
-  private redisInitialized = false;
   private memoryStore: Map<string, { count: number; expires: number }> = new Map();
   private cleanupInterval: NodeJS.Timeout | null = null;
 
@@ -31,34 +26,7 @@ class RateLimiter {
     }
   }
   
-  private async initRedis(): Promise<void> {
-    if (this.redisInitialized) return;
-    
-    this.redisInitialized = true;
-    
-    // Only initialize Redis if URL is available
-    if (process.env.REDIS_URL && 
-        process.env.REDIS_URL !== 'your-redis-url' &&
-        typeof window === 'undefined') { // Only in server environment
-      try {
-        // Dynamic import to avoid build-time issues
-        const { createClient } = await import('redis');
-        this.redis = createClient({
-          url: process.env.REDIS_URL,
-        });
-        
-        this.redis.on('error', (err: any) => {
-          console.warn('Redis client error in rate limiter:', err);
-        });
-        
-        // Connect to Redis
-        await this.redis.connect();
-      } catch (error) {
-        console.warn('Failed to initialize Redis in rate limiter, using memory store:', error);
-        this.redis = null;
-      }
-    }
-  }
+  // Redis fully removed: memory-only rate limiting
   
   private cleanupMemoryStore(): void {
     const now = Date.now();
@@ -81,30 +49,8 @@ class RateLimiter {
     const windowKey = `${key}:${windowStart}`;
 
     let count = 0;
-
-    // Initialize Redis if needed
-    await this.initRedis();
-
-    if (this.redis) {
-      try {
-        // Use Redis for rate limiting
-        const current = await this.redis.get(windowKey);
-        
-        if (current === null) {
-          await this.redis.setEx(windowKey, window, '1');
-          count = 1;
-        } else {
-          count = await this.redis.incr(windowKey);
-        }
-      } catch (error) {
-        console.warn('Redis rate limit check failed, falling back to memory store:', error);
-        // Fall back to memory store
-        count = this.checkMemoryStore(windowKey, window, now + (window * 1000));
-      }
-    } else {
-      // Use memory store
-      count = this.checkMemoryStore(windowKey, window, now + (window * 1000));
-    }
+    // Use memory store only
+    count = this.checkMemoryStore(windowKey, window, now + window * 1000);
 
     const remaining = Math.max(0, requests - count);
     const reset = windowStart + (window * 1000);
@@ -138,21 +84,7 @@ class RateLimiter {
 
   async reset(identifier: string): Promise<void> {
     const key = `rate_limit:${identifier}`;
-    
-    // Initialize Redis if needed
-    await this.initRedis();
-    
-    if (this.redis) {
-      try {
-        const keys = await this.redis.keys(`${key}:*`);
-        if (keys.length > 0) {
-          await this.redis.del(...keys);
-        }
-      } catch (error) {
-        console.error('Rate limit reset error:', error);
-      }
-    }
-    
+
     // Also clear from memory store
     const entries = Array.from(this.memoryStore.entries());
     for (const [memKey] of entries) {

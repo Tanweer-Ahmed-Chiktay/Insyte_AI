@@ -12,7 +12,8 @@ import {
   Phone,
   PhoneOff,
   Volume2,
-  VolumeX
+  VolumeX,
+  Square
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { VoiceOverlay } from './voice-overlay'
@@ -73,13 +74,19 @@ export function AIAssistant() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [isSpeaking, setIsSpeaking] = useState(false)
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(true)
   const [showVoiceOverlay, setShowVoiceOverlay] = useState(false)
   const [voiceOnlyMode, setVoiceOnlyMode] = useState(false)
+  const [showVoiceLogs, setShowVoiceLogs] = useState(false)
+  const [voiceLogMessages, setVoiceLogMessages] = useState<Message[]>([])
   const [ttsProvider, setTtsProvider] = useState<string>('')
   const conversationHistoryRef = useRef<Message[]>([])
   const lastTranscriptRef = useRef<string>('')
   const isProcessingRef = useRef<boolean>(false)
+  const streamReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
   
   // Enhanced voice assistant with phone call-like experience
   const { 
@@ -294,11 +301,77 @@ export function AIAssistant() {
     
     // Add to conversation history but not visible messages in voice-only mode
     conversationHistoryRef.current = [...conversationHistoryRef.current, userMessage]
+    // Log voice-only exchanges for the Voice Logs panel
+    setVoiceLogMessages(prev => [...prev, userMessage])
     
     setIsLoading(true)
     
     try {
       const headers = await createCSRFHeaders()
+      // Voice enabled: stream text and speak chunks via browser TTS
+      if (isVoiceEnabled) {
+        cancelStreamingTTS()
+        const streamHeaders: Record<string, string> = {
+          ...headers,
+          'x-stream': 'true'
+        }
+        const response = await fetch('/api/chat?stream=1', {
+          method: 'POST',
+          headers: streamHeaders,
+          body: JSON.stringify({
+            message: messageText,
+            includeVoice: false,
+            conversationHistory: conversationHistoryRef.current.slice(-10)
+          })
+        })
+        if (!response.ok) {
+          const err = await response.text().catch(() => '')
+          throw new Error(err || 'Failed to start streaming response')
+        }
+        const contentType = response.headers.get('content-type') || ''
+        const assistantId = (Date.now() + 1).toString()
+        const assistantMessage: Message = {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, assistantMessage])
+        if (response.body && contentType.includes('text/plain')) {
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder('utf-8')
+          let fullText = ''
+          setTtsProvider(formatProviderName('browser'))
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            const chunk = decoder.decode(value)
+            fullText += chunk
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: (m.content || '') + chunk } : m))
+            enqueueStreamingTTS(chunk)
+          }
+          const finalAssistantMessage: Message = {
+            ...assistantMessage,
+            content: fullText
+          }
+          conversationHistoryRef.current = [...conversationHistoryRef.current, finalAssistantMessage]
+        } else {
+          const data = await response.json().catch(() => ({ response: '' }))
+          const assistantMessageJSON: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: data.response || 'No response',
+            timestamp: new Date()
+          }
+          setMessages(prev => [...prev, assistantMessageJSON])
+          conversationHistoryRef.current = [...conversationHistoryRef.current, assistantMessageJSON]
+          if (data.response) {
+            setTtsProvider(formatProviderName('browser'))
+            await speakWithBrowserTTS(data.response)
+          }
+        }
+        return
+      }
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers,
@@ -332,6 +405,8 @@ export function AIAssistant() {
       
       // Add to conversation history
       conversationHistoryRef.current = [...conversationHistoryRef.current, assistantMessage]
+      // Log assistant reply for the Voice Logs panel
+      setVoiceLogMessages(prev => [...prev, assistantMessage])
       
       // Play voice response immediately
       console.log('🎙️ Voice-only mode: Audio URL:', data.audioUrl)
@@ -355,6 +430,15 @@ export function AIAssistant() {
       console.error('Voice chat error:', error)
       
       const errorMessage = getErrorMessage(error)
+      // Log error as an assistant message for traceability
+      const errorLog: Message = {
+        id: (Date.now() + 2).toString(),
+        role: 'assistant',
+        content: `Error: ${errorMessage}`,
+        timestamp: new Date(),
+        isVoiceOnly: true
+      }
+      setVoiceLogMessages(prev => [...prev, errorLog])
       
       // Speak error message in voice-only mode
       if (voiceOnlyMode) {
@@ -374,7 +458,34 @@ export function AIAssistant() {
     }
   }
 
-  // Enhanced regular message handling
+  // Stop streaming and speaking functionality
+  const stopStreamingAndSpeaking = () => {
+    // Stop streaming
+    if (streamReaderRef.current) {
+      streamReaderRef.current.cancel()
+      streamReaderRef.current = null
+    }
+    
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    
+    setIsStreaming(false)
+    setIsLoading(false)
+    
+    // Stop speaking
+    cancelStreamingTTS()
+    stopAudio()
+    setIsSpeaking(false)
+    
+    // Stop voice listening if active
+    if (voiceState.isListening) {
+      stopListening()
+    }
+  }
+
+  // Enhanced message handling with streaming for both voice and text modes
   const handleSendMessage = async (messageText?: string) => {
     const textToSend = messageText || input
     if (!textToSend.trim() || isLoading) return
@@ -394,54 +505,125 @@ export function AIAssistant() {
     
     try {
       const headers = await createCSRFHeaders()
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ 
-          message: textToSend,
-          includeVoice: isVoiceEnabled,
-          conversationHistory: conversationHistoryRef.current.slice(-10)
-        })
-      })
-
-      // Capture TTS provider from server if present
-      const chatVoiceProvider = response.headers.get('x-voice-provider')
-      if (chatVoiceProvider) {
-        setTtsProvider(formatProviderName(chatVoiceProvider))
+      
+      // Always use streaming for better UX - works for both voice and text modes
+      const streamHeaders: Record<string, string> = {
+        ...headers,
+        'x-stream': 'true'
       }
       
-      const data = await response.json()
+      // Create abort controller for this request
+      abortControllerRef.current = new AbortController()
+      
+      const response = await fetch('/api/chat?stream=1', {
+        method: 'POST',
+        headers: streamHeaders,
+        body: JSON.stringify({
+          message: textToSend,
+          includeVoice: false, // Always false for streaming - we'll handle TTS client-side
+          conversationHistory: conversationHistoryRef.current.slice(-10)
+        }),
+        signal: abortControllerRef.current.signal
+      })
       
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to send message')
+        const err = await response.text().catch(() => '')
+        throw new Error(err || 'Failed to start streaming response')
       }
       
-      console.log('🤖 Regular mode: Assistant response received:', data.response)
+      const contentType = response.headers.get('content-type') || ''
+      
+      // Prepare assistant message for incremental updates
+      const assistantId = (Date.now() + 1).toString()
       const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: assistantId,
         role: 'assistant',
-        content: data.response,
+        content: '',
         timestamp: new Date()
       }
-      
       setMessages(prev => [...prev, assistantMessage])
-      conversationHistoryRef.current = [...conversationHistoryRef.current, assistantMessage]
       
-      // Play voice response if voice is enabled
-      console.log('🤖 Regular mode: Voice enabled:', isVoiceEnabled, 'Audio URL:', data.audioUrl)
-      if (isVoiceEnabled) {
-        if (data.audioUrl) {
-          if (data.audioUrl === 'USE_BROWSER_TTS') {
-            console.log('🤖 Regular mode: Using browser TTS')
-            setTtsProvider(formatProviderName('browser'))
-            await speakWithBrowserTTS(data.response)
-          } else {
-            console.log('🤖 Regular mode: Playing audio from URL:', data.audioUrl)
-            await playAudio(data.audioUrl)
+      // Hide loading dots once streaming starts
+      setIsLoading(false)
+      setIsStreaming(true)
+
+      // Stream plain text chunks
+      if (response.body && contentType.includes('text/plain')) {
+        console.log('🔄 Client: Starting to read stream...')
+        const reader = response.body.getReader()
+        streamReaderRef.current = reader
+        const decoder = new TextDecoder('utf-8')
+        let fullText = ''
+        
+        // Cancel any ongoing TTS if voice is enabled
+        if (isVoiceEnabled) {
+          cancelStreamingTTS()
+        }
+        
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+              console.log('🔄 Client: Stream reading completed, total text:', fullText.length, 'chars')
+              break
+            }
+            
+            const chunk = decoder.decode(value)
+            console.log('🔄 Client: Received chunk:', chunk)
+            fullText += chunk
+            
+            // Update the assistant message incrementally with a small delay for visible streaming
+            setMessages(prev => prev.map(m => 
+              m.id === assistantId ? { ...m, content: fullText } : m
+            ))
+            
+            // Force a re-render by using a functional update
+            setTimeout(() => {
+              setMessages(prev => [...prev])
+            }, 0)
+            
+            // If voice is enabled, queue chunks for TTS
+            if (isVoiceEnabled) {
+              enqueueStreamingTTS(chunk)
+            }
+            
+            // Add a small delay to make streaming visible (only if chunk has meaningful content)
+            if (chunk.trim().length > 0) {
+              await new Promise(resolve => setTimeout(resolve, 80))
+            }
           }
-        } else {
-          console.log('🤖 Regular mode: No audio provided, falling back to browser TTS')
-          setTtsProvider(formatProviderName('browser'))
+        } catch (error: any) {
+          if (error.name === 'AbortError') {
+            console.log('🔄 Client: Stream was aborted by user')
+            return
+          }
+          throw error
+        } finally {
+          streamReaderRef.current = null
+          setIsStreaming(false)
+        }
+        
+        // Persist conversation history
+        const finalAssistantMessage: Message = {
+          ...assistantMessage,
+          content: fullText
+        }
+        conversationHistoryRef.current = [...conversationHistoryRef.current, finalAssistantMessage]
+        
+      } else {
+        // Fallback to JSON mode if not streaming content-type
+        const data = await response.json().catch(() => ({ response: '' }))
+        const assistantMessageJSON: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.response || 'No response',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, assistantMessageJSON])
+        conversationHistoryRef.current = [...conversationHistoryRef.current, assistantMessageJSON]
+        
+        // If voice is enabled, speak the full response
+        if (isVoiceEnabled && data.response) {
           await speakWithBrowserTTS(data.response)
         }
       }
@@ -533,17 +715,93 @@ export function AIAssistant() {
         }
         // Stop any ongoing speech
         window.speechSynthesis.cancel()
+        setIsSpeaking(true)
         const utterance = new SpeechSynthesisUtterance(text)
         utterance.rate = 1.0
         utterance.pitch = 1.0
         utterance.lang = 'en-US'
-        utterance.onend = () => resolve()
-        utterance.onerror = () => reject(new Error('Browser TTS error'))
+        utterance.onend = () => {
+          setIsSpeaking(false)
+          resolve()
+        }
+        utterance.onerror = () => {
+          setIsSpeaking(false)
+          reject(new Error('Browser TTS error'))
+        }
         window.speechSynthesis.speak(utterance)
       } catch (err) {
+        setIsSpeaking(false)
         reject(err as Error)
       }
     })
+  }
+
+  // Streaming Browser TTS: queue sentence chunks and speak incrementally
+  const ttsQueueRef = useRef<string[]>([])
+  const ttsBufferRef = useRef<string>('')
+  const ttsSpeakingRef = useRef<boolean>(false)
+
+  const cancelStreamingTTS = () => {
+    try {
+      ttsQueueRef.current = []
+      ttsBufferRef.current = ''
+      ttsSpeakingRef.current = false
+      setIsSpeaking(false)
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel()
+      }
+    } catch {}
+  }
+
+  const enqueueStreamingTTS = (incomingText: string) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      return
+    }
+    // Accumulate buffer and split into complete sentences
+    ttsBufferRef.current += incomingText
+    const parts = ttsBufferRef.current.split(/([.!?\n])/)
+    const speakable: string[] = []
+    for (let i = 0; i < parts.length - 1; i += 2) {
+      const sentence = (parts[i] + parts[i + 1]).trim()
+      if (sentence.length > 0) speakable.push(sentence)
+    }
+    const hasTrailing = parts.length % 2 === 1
+    ttsBufferRef.current = hasTrailing ? parts[parts.length - 1] : ''
+    ttsQueueRef.current.push(...speakable)
+
+    const speakNext = () => {
+      if (ttsQueueRef.current.length === 0) {
+        ttsSpeakingRef.current = false
+        setIsSpeaking(false)
+        return
+      }
+      
+      const sentence = ttsQueueRef.current.shift()
+      if (!sentence || !sentence.trim()) {
+        speakNext()
+        return
+      }
+      
+      ttsSpeakingRef.current = true
+      setIsSpeaking(true)
+      const utterance = new SpeechSynthesisUtterance(sentence)
+      utterance.rate = 1.0
+      utterance.pitch = 1.0
+      utterance.lang = 'en-US'
+      utterance.onend = () => {
+        ttsSpeakingRef.current = false
+        speakNext()
+      }
+      utterance.onerror = () => {
+        ttsSpeakingRef.current = false
+        speakNext()
+      }
+      window.speechSynthesis.speak(utterance)
+    }
+
+    if (!ttsSpeakingRef.current) {
+      speakNext()
+    }
   }
 
   // Helper to format provider names from header values
@@ -615,8 +873,8 @@ export function AIAssistant() {
     <div className="flex-1 flex flex-col h-full">
       {/* Enhanced Header */}
       <div className="p-6 border-b border-border flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-3 flex-wrap">
             <Bot className="h-6 w-6 text-primary" />
             <div>
               <h1 className="text-xl font-semibold">AI Assistant</h1>
@@ -629,7 +887,7 @@ export function AIAssistant() {
             </div>
           </div>
           
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {/* TTS Provider Indicator */}
             {ttsProvider && (
               <div className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-muted text-muted-foreground border border-border">
@@ -649,6 +907,15 @@ export function AIAssistant() {
             >
               {isVoiceEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
             </Button>
+            {voiceState.isSpeaking && !voiceOnlyMode && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { try { window.speechSynthesis?.cancel() } catch {}; stopAudio() }}
+              >
+                Stop Speaking
+              </Button>
+            )}
             
             {/* Clear Chat */}
             <Button
@@ -664,9 +931,9 @@ export function AIAssistant() {
       </div>
       
       {/* Voice-Only Mode Interface */}
-      {voiceOnlyMode ? (
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="text-center max-w-md">
+  {voiceOnlyMode ? (
+    <div className="flex-1 flex items-center justify-center p-6">
+      <div className="text-center max-w-md">
             <div className="mb-8">
               <div className={cn(
                 "w-32 h-32 mx-auto mb-6 rounded-full flex items-center justify-center transition-all duration-300",
@@ -696,7 +963,7 @@ export function AIAssistant() {
               <h2 className="text-2xl font-bold mb-2">Voice Assistant</h2>
               <p className="text-muted-foreground text-lg mb-4">
                 {voiceState.isSpeaking 
-                  ? "Im speaking..." 
+                  ? "I'm speaking..." 
                   : voiceState.isListening 
                     ? voiceState.isVoiceDetected 
                       ? "I hear you..." 
@@ -716,7 +983,7 @@ export function AIAssistant() {
             
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Speak naturally - I apos;ll respond automatically like a phone call
+                Speak naturally — I'll respond automatically like a phone call
               </p>
               
               <Button
@@ -728,6 +995,27 @@ export function AIAssistant() {
                 <PhoneOff className="h-5 w-5 mr-2" />
                 End Voice Call
               </Button>
+              <div className="mt-4">
+                <Button variant="ghost" size="sm" onClick={() => setShowVoiceLogs(!showVoiceLogs)}>
+                  {showVoiceLogs ? 'Hide Voice Logs' : 'Show Voice Logs'}
+                </Button>
+              </div>
+              {showVoiceLogs && (
+                <div className="mt-4 text-left max-h-64 overflow-y-auto">
+                  {voiceLogMessages.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No voice logs yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {voiceLogMessages.map((m) => (
+                        <div key={m.id} className={cn("p-3 rounded-lg border", m.role === 'user' ? "bg-blue-50 border-blue-200" : "bg-green-50 border-green-200")}> 
+                          <div className="text-xs text-muted-foreground mb-1">{m.role === 'user' ? 'You' : 'Assistant'} • {m.timestamp.toLocaleTimeString()}</div>
+                          <div className="text-sm whitespace-pre-wrap break-words">{m.content}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -810,7 +1098,7 @@ export function AIAssistant() {
           {/* Enhanced Input Area */}
           <div className="p-6 border-t border-border">
             <div className="max-w-4xl mx-auto">
-              <div className="flex space-x-2">
+              <div className="flex flex-wrap gap-2">
                 <Input
                   placeholder="Type your message..."
                   value={input}
@@ -849,6 +1137,18 @@ export function AIAssistant() {
                 >
                   {voiceState.isListening && !voiceOnlyMode ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                 </Button>
+                
+                {/* Stop Button - Show when streaming or speaking */}
+                {(isStreaming || isSpeaking) && (
+                  <Button
+                    variant="destructive"
+                    size="icon"
+                    onClick={stopStreamingAndSpeaking}
+                    title="Stop streaming or speaking"
+                  >
+                    <Square className="h-4 w-4" />
+                  </Button>
+                )}
                 
                 <Button
                   onClick={() => handleSendMessage()}

@@ -34,6 +34,9 @@ export async function POST(request: NextRequest) {
     const rawHtmlBody = formData.get('htmlBody') as string
     const attachmentCount = parseInt(formData.get('attachmentCount') as string || '0')
     const scheduledAt = formData.get('scheduledAt') as string
+    const threadId = (formData.get('threadId') as string) || ''
+    const inReplyTo = (formData.get('inReplyTo') as string) || ''
+    const references = (formData.get('references') as string) || ''
     
     // Auto-convert Markdown to HTML with syntax highlighting if needed
     const htmlBody = await autoConvertMarkdown(rawHtmlBody)
@@ -185,6 +188,14 @@ export async function POST(request: NextRequest) {
       'MIME-Version: 1.0'
     ]
 
+    // Add reply/threading headers when provided
+    if (inReplyTo) {
+      emailContent.push(`In-Reply-To: <${inReplyTo}>`)
+    }
+    if (references) {
+      emailContent.push(`References: <${references}>`)
+    }
+
     if (attachments.length > 0) {
       // Multipart email with attachments
       emailContent.push(`Content-Type: multipart/mixed; boundary="${boundary}"`)
@@ -230,7 +241,9 @@ export async function POST(request: NextRequest) {
     const result = await gmail.users.messages.send({
       userId: 'me',
       requestBody: {
-        raw: encodedEmail
+        raw: encodedEmail,
+        // When threadId is provided, Gmail will append to existing conversation
+        ...(threadId ? { threadId } : {})
       }
     })
     console.log('Gmail API response:', result.data)

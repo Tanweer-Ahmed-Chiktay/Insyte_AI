@@ -2,8 +2,9 @@ import React from 'react'
 import { FixedSizeList as List } from 'react-window'
 import AutoSizer from 'react-virtualized-auto-sizer'
 import { motion } from 'framer-motion'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
-import { Paperclip, GripVertical } from 'lucide-react'
+import { Paperclip, GripVertical, MoreHorizontal } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
 // Clean noisy headers and quoted blocks from Gmail-style snippets (conservative)
@@ -97,6 +98,21 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
   onEmailDrop 
 }) => {
   const [isDragging, setIsDragging] = React.useState(false)
+  const [isMenuOpen, setIsMenuOpen] = React.useState(false)
+  const [menuPosition, setMenuPosition] = React.useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const menuRef = React.useRef<HTMLDivElement | null>(null)
+
+  React.useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setIsMenuOpen(false)
+      }
+    }
+    if (isMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isMenuOpen])
 
   const handleDragStart = (e: React.DragEvent) => {
     setIsDragging(true)
@@ -127,6 +143,16 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
         console.log('Email row clicked:', email.id, email.subject)
         onEmailSelect(email)
       }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        // Position the menu at the cursor and clamp to viewport
+        const MENU_WIDTH = 176 // ~w-44
+        const MENU_HEIGHT = 240 // approximate height
+        const x = Math.min(e.clientX, window.innerWidth - MENU_WIDTH - 8)
+        const y = Math.min(e.clientY, window.innerHeight - MENU_HEIGHT - 8)
+        setMenuPosition({ x, y })
+        setIsMenuOpen(true)
+      }}
       whileHover={{ scale: isDragging ? 1 : 1.02 }}
       whileTap={{ scale: isDragging ? 1 : 0.98 }}
       transition={{ duration: 0.15 }}
@@ -150,9 +176,27 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
             )}
           </div>
         </div>
-        <div className="text-xs text-muted-foreground flex-shrink-0 font-medium">
-          {formatDistanceToNow(new Date(email.date), { addSuffix: true })}
-        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="text-xs text-muted-foreground font-medium">
+            {formatDistanceToNow(new Date(email.date), { addSuffix: true })}
+          </div>
+          <button
+            className="h-6 w-6 inline-flex items-center justify-center rounded hover:bg-muted"
+            aria-label="Email actions"
+          onClick={(e) => {
+            e.stopPropagation()
+            const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+            const MENU_WIDTH = 176
+            const MENU_HEIGHT = 240
+            const x = Math.min(rect.right, window.innerWidth - MENU_WIDTH - 8)
+            const y = Math.min(rect.bottom, window.innerHeight - MENU_HEIGHT - 8)
+            setMenuPosition({ x, y })
+            setIsMenuOpen((o) => !o)
+          }}
+        >
+          <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+        </button>
+      </div>
       </div>
       
       <div>
@@ -166,6 +210,64 @@ const DraggableEmailRow: React.FC<DraggableEmailRowProps> = ({
           {getDisplaySnippet(email.subject, email.summary?.summary, email.snippet)}
         </div>
       </div>
+
+      {isMenuOpen && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[1000] bg-popover border border-border rounded-md shadow-md w-44 overflow-hidden"
+          style={{ left: menuPosition.x, top: menuPosition.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ul className="text-sm">
+            <li>
+              <button className="w-full text-left px-3 py-2 hover:bg-muted" onClick={() => {
+                setIsMenuOpen(false)
+                window.dispatchEvent(new CustomEvent('email-row-action', { detail: { action: 'reply', email } }))
+              }}>Reply</button>
+            </li>
+            <li>
+              <button className="w-full text-left px-3 py-2 hover:bg-muted" onClick={() => {
+                setIsMenuOpen(false)
+                window.dispatchEvent(new CustomEvent('email-row-action', { detail: { action: 'forward', email } }))
+              }}>Forward</button>
+            </li>
+            <li className="border-t border-border" />
+            <li>
+              <button className="w-full text-left px-3 py-2 hover:bg-muted" onClick={() => {
+                setIsMenuOpen(false)
+                const action = email.isRead ? 'markUnread' : 'markRead'
+                window.dispatchEvent(new CustomEvent('email-row-action', { detail: { action, email } }))
+              }}>{email.isRead ? 'Mark as unread' : 'Mark as read'}</button>
+            </li>
+            <li>
+              <button className="w-full text-left px-3 py-2 hover:bg-muted" onClick={() => {
+                setIsMenuOpen(false)
+                window.dispatchEvent(new CustomEvent('email-row-action', { detail: { action: 'archive', email } }))
+              }}>Archive</button>
+            </li>
+            <li>
+              <button className="w-full text-left px-3 py-2 hover:bg-muted text-red-600" onClick={() => {
+                setIsMenuOpen(false)
+                window.dispatchEvent(new CustomEvent('email-row-action', { detail: { action: 'delete', email } }))
+              }}>Delete</button>
+            </li>
+            <li className="border-t border-border" />
+            <li>
+              <button className="w-full text-left px-3 py-2 hover:bg-muted" onClick={() => {
+                setIsMenuOpen(false)
+                window.dispatchEvent(new CustomEvent('email-row-action', { detail: { action: 'moveTo', email } }))
+              }}>Move to…</button>
+            </li>
+            <li>
+              <button className="w-full text-left px-3 py-2 hover:bg-muted" onClick={() => {
+                setIsMenuOpen(false)
+                window.dispatchEvent(new CustomEvent('email-row-action', { detail: { action: 'label', email } }))
+              }}>Label…</button>
+            </li>
+          </ul>
+        </div>,
+        document.body
+      )}
     </motion.div>
   )
 }
