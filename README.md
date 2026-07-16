@@ -115,4 +115,3 @@ npm run dev
 
 I care about both sides of the product — the interaction quality users feel and the system reliability that makes it possible. This project is an example of that: real-time infra, a clean abstraction layer, and a UI that doesn't feel like a developer built it.
 
-Open to Design Engineer, Product Engineer, and full-stack roles where both matter.
