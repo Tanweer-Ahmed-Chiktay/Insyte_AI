@@ -28,6 +28,7 @@ yarn-error.log*
 # local env files
 .env*.local
 .env
+.env*
 
 # Debug and test files
 test-*.js
@@ -54,11 +55,43 @@ fix.json
 *.tsbuildinfo
 next-env.d.ts
 
-# IDE
+# IDE & tools
 .vscode/
 .idea/
 *.swp
 *.swo
+.serena/
+
+# Google Cloud SDK
+GCloud/
+
+# Extra markdown docs (keep only README.md)
+READMEs/
+*.md
+!README.md
+
+# Shell env scripts
+set-pusher-env.sh
+update-vercel-env.sh
+setup-integration.sh
+
+# Reference / diagnostic dumps
+ref/
+cloud-run/ref/
+
+# Test & debug files
+test-pusher-client.html
+test-pusher-publish.js
+examples/
+
+# Cloud Run worker env
+cloud-run/gmail-pubsub-worker/.env
+
+# Deployment status docs
+CLOUD_RUN_DEPLOYMENT_STATUS.md
+INTEGRATION_GUIDE.md
+PUBSUB_VERIFICATION.md
+SETUP_REQUIREMENTS.md
 
 # OS
 .DS_Store
@@ -86,3 +119,7 @@ logs
 # Backup files
 *.backup
 *.bak
+
+# Lock files & redundant artifacts
+package-lock.json
+corrected-supabase-schema.sql
